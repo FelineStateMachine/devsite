@@ -213,15 +213,22 @@ function siteRow(item, { onClick, from } = {}) {
   return li;
 }
 
-/// Where a link goes, or just an arrow when its name already says so.
+/// Where a link goes: always in the markup, revealed one row at a time.
 ///
-/// `www.` is ignored in the comparison: a link named `klot.ski` pointing at
-/// `www.klot.ski` is the same claim written twice.
+/// Every link carries its host, including the ones named after it. The arrow is
+/// what you see at rest; pointing at a row expands the host leftward out of it.
+/// So `github.com` is there on both repos without two rows saying the same thing
+/// at once, and a link named `klot.ski` is not silently missing information the
+/// others have — it is just never showing it and its neighbour at the same time.
+///
+/// The nested span is what makes it animate: the outer element is an inline grid
+/// whose single column goes 0fr → 1fr, which transitions to exactly the content's
+/// width without anyone having to guess a max-width. The trailing space lives
+/// inside the clipped span so it collapses with the text rather than leaving a
+/// gap before the arrow.
 function linkHost(item) {
-  const host = new URL(item.url).host;
-  const same = host.replace(/^www\./, '').toLowerCase()
-    === item.name.replace(/^www\./, '').toLowerCase();
-  return same ? '↗' : `${host} ↗`;
+  const host = esc(new URL(item.url).host);
+  return `<span class="host"><span>${host}&nbsp;</span></span>↗`;
 }
 
 function entryList(items, options = {}) {

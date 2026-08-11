@@ -143,6 +143,41 @@ body > main {
   color: var(--pico-muted-color);
 }
 
+/* The host, folded into the arrow until you point at its row.
+ *
+ * An inline grid going 0fr → 1fr animates to exactly the content's width, which
+ * a max-width cannot do without a guess — and a wrong guess either clips a long
+ * host or spends the transition crossing empty space. The row is right-aligned,
+ * so growing the column pushes the text out to the left and leaves the arrow
+ * where it was. */
+.entries .host {
+  display: inline-grid;
+  grid-template-columns: 0fr;
+  opacity: 0;
+  transition: grid-template-columns 240ms ease, opacity 160ms ease;
+}
+.entries .host > span {
+  overflow: hidden;
+}
+.entries > li:is(:hover, :focus-within) .host {
+  grid-template-columns: 1fr;
+  opacity: 1;
+}
+
+/* Without hover there is no way to ask, so the answer is always on. */
+@media (hover: none) {
+  .entries .host {
+    grid-template-columns: 1fr;
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .entries .host {
+    transition: none;
+  }
+}
+
 /* -- the viewer ------------------------------------------------------------ */
 
 /* Wider than Pico's 700px modal: this one holds a whole web page. */

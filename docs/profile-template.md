@@ -61,10 +61,11 @@ changes here and changes to the whitelist belong in the same commit.
 
       <!-- loose sites first, in the order they were published -->
       <ul class="entries">
-        <!-- reached at its own address, so it is an anchor and takes you away -->
+        <!-- reached at its own address, so it is an anchor and takes you away.
+             The host is always present and folded into the arrow; see below. -->
         <li class="entry" data-kind="link" data-visibility="public">
           <a href="https://klot.ski" target="_blank" rel="noopener noreferrer">klot.ski</a>
-          <small class="state">↗</small>
+          <small class="state"><span class="host"><span>klot.ski&nbsp;</span></span>↗</small>
         </li>
         <!-- reached through its owner's daemon, so it is a button and opens
              here. No reachability state: nothing knows whether it is running
@@ -106,6 +107,19 @@ offered.
 
 There is deliberately no reachability state to style: the page does not know
 whether a daemon is running, and says so by saying nothing.
+
+### The host
+
+Every link carries its host, including the ones named after it. At rest you see
+the arrow; pointing at a row expands the host leftward out of it, so two repos
+can both say `github.com` without two rows saying it at once.
+
+`.host` is an inline grid whose single column animates `0fr → 1fr`, which reaches
+exactly the content's width — a `max-width` would need a guess, and a wrong guess
+either clips a long host or spends the transition crossing empty space. The
+trailing space sits inside the clipped inner span so it collapses with the text
+rather than leaving a gap before the arrow. Where there is no hover to ask with,
+`@media (hover: none)`, the host is simply always shown.
 
 ## Folders
 
