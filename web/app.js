@@ -1,4 +1,9 @@
 // dev.site — profile rendering, Shoo sign-in, and opening a local service over Iroh.
+//
+// The markup this file produces is a contract, not an implementation detail: a
+// profile's theme is a list of --pico-* assignments that only mean anything
+// against the elements below. Keep it semantic, keep it documented, and change
+// it in step with docs/profile-template.md.
 
 const SHOO = 'https://shoo.dev';
 const $ = (id) => document.getElementById(id);
@@ -106,161 +111,287 @@ async function completeSignIn() {
   return { session, returnTo };
 }
 
+// -- themes --------------------------------------------------------------------
+
+/// Apply a profile's theme.
+///
+/// The server has already checked every property against its whitelist and every
+/// value against a grammar, so this is only assembly: one rule, scoped to the
+/// profile, holding nothing but custom-property assignments. It is the last
+/// stylesheet in the document, so equal specificity is enough — no user rule
+/// ever has to out-rank Pico.
+function applyTheme(handle, declarations = []) {
+  const root = document.documentElement;
+  // Belt and braces: handles are already restricted to this alphabet server-side.
+  const scope = String(handle).replace(/[^A-Za-z0-9_-]/g, '');
+  root.dataset.profile = scope;
+
+  // The one key that is not a Pico variable — it picks which of Pico's own
+  // palettes the profile starts from.
+  const scheme = declarations.find((d) => d.property === '--devsite-scheme')?.value;
+  if (scheme === 'light' || scheme === 'dark') {
+    root.dataset.theme = scheme;
+  } else {
+    delete root.dataset.theme;
+  }
+
+  const body = declarations
+    .filter((d) => d.property !== '--devsite-scheme')
+    .map((d) => `  ${d.property}: ${d.value};`)
+    .join('\n');
+  $('profile-theme').textContent = body
+    ? `[data-profile="${scope}"] {\n${body}\n}\n`
+    : '';
+}
+
+function clearTheme() {
+  delete document.documentElement.dataset.profile;
+  delete document.documentElement.dataset.theme;
+  $('profile-theme').textContent = '';
+}
+
 // -- rendering -----------------------------------------------------------------
 
 function renderSession() {
   const session = $('session');
   if (!me) {
-    session.innerHTML = '<a id="signin">sign in</a>';
-    $('signin').addEventListener('click', startSignIn);
+    session.innerHTML = '<li><a href="#" id="signin" role="button" class="outline">Sign in</a></li>';
+    $('signin').addEventListener('click', (e) => { e.preventDefault(); startSignIn(); });
     return;
   }
-  const where = me.handle ? `<a href="/@${esc(me.handle)}">@${esc(me.handle)}</a>` : 'no handle yet';
-  session.innerHTML = `${where}`;
+  session.innerHTML = me.handle
+    ? `<li><a href="/@${esc(me.handle)}">@${esc(me.handle)}</a></li>`
+    : '<li><small>no handle yet</small></li>';
 }
 
-function entryRow({ name, state, className, accentClass, href, onClick, disabled }) {
-  const tag = href ? 'a' : 'button';
-  const el = document.createElement(tag);
-  el.className = `entry ${accentClass} ${className || ''}`.trim();
-  if (href) { el.href = href; el.target = '_blank'; el.rel = 'noopener noreferrer'; }
-  if (disabled) el.disabled = true;
-  el.innerHTML = `
-    <span class="name">${name}</span>
-    <span class="leader"></span>
-    <span class="state">${state}</span>`;
-  if (onClick && !disabled) el.addEventListener('click', onClick);
-  return el;
-}
+/// One row of a profile: a name on the left, its state on the right.
+///
+/// Links are anchors and services are buttons, because a link goes somewhere and
+/// a service opens here. Nothing about that changes with the theme.
+function entry({ kind, name, state, online, href, onClick }) {
+  const li = document.createElement('li');
+  li.className = 'entry';
+  li.dataset.kind = kind;
+  if (online !== undefined) li.dataset.state = online ? 'online' : 'offline';
 
-function group(title, kind, rows) {
-  const section = document.createElement('section');
-  section.className = `group ${kind}`;
-  const head = document.createElement('div');
-  head.className = 'group-head';
-  head.innerHTML = `<h2>${esc(title)}</h2><span class="rule"></span>`;
-  section.append(head);
-  if (rows.length === 0) {
-    const empty = document.createElement('p');
-    empty.className = 'empty';
-    empty.textContent = 'nothing here';
-    section.append(empty);
+  if (href) {
+    li.innerHTML =
+      `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${name}</a>` +
+      `<small class="state">${esc(state)}</small>`;
   } else {
-    rows.forEach((row) => section.append(row));
+    li.innerHTML =
+      `<button class="outline${online ? '' : ' secondary'}"${online ? '' : ' disabled'}>${name}</button>` +
+      `<small class="state">${esc(state)}</small>`;
+    if (online && onClick) li.querySelector('button').addEventListener('click', onClick);
   }
+  return li;
+}
+
+function group(title, visibility, rows) {
+  const section = document.createElement('section');
+  section.className = 'group';
+  section.dataset.visibility = visibility;
+  section.innerHTML = `<h2>${esc(title)}</h2>`;
+
+  const list = document.createElement('ul');
+  list.className = 'entries';
+  rows.forEach((row) => list.append(row));
+  section.append(list);
   return section;
 }
 
-function serviceState(entry) {
-  return entry.online ? '<em>online</em>' : '<em>offline</em>';
-}
-
 function renderProfile(profile) {
+  applyTheme(profile.handle, profile.theme);
   main.innerHTML = '';
 
-  const identity = document.createElement('div');
-  identity.className = 'identity';
-  identity.innerHTML = `
-    <h1 class="handle"><span class="at">@</span>${esc(profile.handle)}</h1>
-    <p class="sub">${profile.is_owner ? 'your profile' : 'profile'}</p>`;
-  main.append(identity);
+  const article = document.createElement('article');
+  article.id = 'profile';
+
+  const counts = [
+    profile.entries.filter((e) => e.kind === 'service').length,
+    profile.entries.filter((e) => e.kind === 'link').length,
+  ];
+  const summary = [
+    counts[0] === 1 ? '1 service' : `${counts[0]} services`,
+    counts[1] === 1 ? '1 link' : `${counts[1]} links`,
+  ].join(' · ');
+
+  const heading = document.createElement('hgroup');
+  heading.innerHTML = `<h1>@${esc(profile.handle)}</h1><p>${summary}</p>`;
+  article.append(heading);
 
   const buckets = { public: [], private: [], shared: [] };
-  for (const entry of profile.entries) {
-    const accent = `is-${entry.visibility}`;
-    if (entry.kind === 'link') {
-      buckets.public.push(entryRow({
-        name: esc(entry.name),
-        state: `${esc(new URL(entry.url).host)} ↗`,
-        accentClass: accent,
-        href: entry.url,
+  for (const item of profile.entries) {
+    if (item.kind === 'link') {
+      buckets.public.push(entry({
+        kind: 'link',
+        name: esc(item.name),
+        state: `${new URL(item.url).host} ↗`,
+        href: item.url,
       }));
     } else {
-      buckets[entry.visibility].push(entryRow({
-        name: esc(entry.name),
-        state: serviceState(entry),
-        accentClass: accent,
-        className: entry.online ? 'online' : 'offline',
-        disabled: !entry.online,
-        onClick: () => openService(entry),
+      buckets[item.visibility].push(entry({
+        kind: 'service',
+        name: esc(item.name),
+        state: item.online ? 'online' : 'offline',
+        online: item.online,
+        onClick: () => openService(item),
       }));
     }
   }
 
-  if (buckets.public.length) main.append(group('public', 'public', buckets.public));
-  if (buckets.private.length) main.append(group('private', 'private', buckets.private));
-  if (buckets.shared.length) main.append(group('shared', 'shared', buckets.shared));
+  const titles = { public: 'Public', private: 'Private', shared: 'Shared' };
+  for (const visibility of ['public', 'private', 'shared']) {
+    if (buckets[visibility].length) {
+      article.append(group(titles[visibility], visibility, buckets[visibility]));
+    }
+  }
 
   if (profile.shared_with_me.length) {
-    const rows = profile.shared_with_me.map((entry) => entryRow({
-      name: `<span class="owner">@${esc(entry.owner_handle)}’s</span> ${esc(entry.name)}`,
-      state: serviceState(entry),
-      accentClass: 'is-shared',
-      className: entry.online ? 'online' : 'offline',
-      disabled: !entry.online,
-      onClick: () => openService(entry),
+    const rows = profile.shared_with_me.map((item) => entry({
+      kind: 'service',
+      name: `${esc(item.name)} <small>from @${esc(item.owner_handle)}</small>`,
+      state: item.online ? 'online' : 'offline',
+      online: item.online,
+      onClick: () => openService(item),
     }));
-    main.append(group('shared with me', 'shared', rows));
+    article.append(group('Shared with me', 'shared-with-me', rows));
   }
 
-  if (!main.querySelector('.entry')) {
+  if (!article.querySelector('.entry')) {
     const empty = document.createElement('p');
-    empty.className = 'empty';
-    empty.textContent = 'nothing published yet';
-    main.append(empty);
+    empty.innerHTML = '<small>Nothing published yet.</small>';
+    article.append(empty);
   }
+
+  main.append(article);
+  if (profile.is_owner) main.append(appearanceEditor(profile));
+}
+
+/// The theme editor, on your own profile only.
+///
+/// It deliberately shows the stored text rather than a set of colour pickers:
+/// the thing being edited really is CSS, and the server's refusals are specific
+/// enough to be worth reading.
+function appearanceEditor(profile) {
+  const details = document.createElement('details');
+  details.className = 'appearance';
+  details.innerHTML = `
+    <summary>Appearance</summary>
+    <form>
+      <label for="theme-css">
+        Pico variables, as declarations. Everything else is refused.
+        <textarea id="theme-css" name="css" rows="8" spellcheck="false"
+          placeholder="--devsite-scheme: dark;&#10;--pico-primary: #7b3fe4;&#10;--pico-border-radius: 0.5rem;"></textarea>
+      </label>
+      <small id="theme-note">
+        <a href="/api/theme/properties" target="_blank" rel="noopener">What you may set</a>
+      </small>
+      <fieldset role="group">
+        <button type="submit">Save</button>
+        <button type="button" class="secondary outline" id="theme-clear">Clear</button>
+      </fieldset>
+    </form>`;
+
+  const form = details.querySelector('form');
+  const field = details.querySelector('#theme-css');
+  const note = details.querySelector('#theme-note');
+  field.value = profile.theme
+    .map((d) => `${d.property}: ${d.value};`)
+    .join('\n');
+
+  const save = async (css) => {
+    try {
+      const saved = await api('/api/theme', { method: 'PUT', body: JSON.stringify({ css }) });
+      field.value = saved.css.trimEnd();
+      field.removeAttribute('aria-invalid');
+      note.innerHTML = '<span class="ok">Saved.</span>';
+      applyTheme(profile.handle, saved.theme);
+    } catch (err) {
+      field.setAttribute('aria-invalid', 'true');
+      note.innerHTML = `<span class="error">${esc(err.message)}</span>`;
+    }
+  };
+
+  form.addEventListener('submit', (e) => { e.preventDefault(); save(field.value); });
+  details.querySelector('#theme-clear').addEventListener('click', () => save(''));
+  return details;
 }
 
 // -- opening a service ---------------------------------------------------------
 
 const HOPS = ['this browser', 'iroh relay', 'the daemon', 'the service'];
 
-function paintPath(reached) {
-  $('path').innerHTML = HOPS.map((hop, i) => {
-    const cls = i < reached ? 'done' : i === reached ? 'live' : '';
-    const sep = i < HOPS.length - 1 ? '<span class="sep">→</span>' : '';
-    return `<span class="hop ${cls}">${hop}</span>${sep}`;
-  }).join(' ');
+function paintHops(reached) {
+  $('viewer-hops').innerHTML = HOPS.map((hop, i) => {
+    const state = i < reached ? 'yes' : i === reached ? 'now' : 'no';
+    const arrow = i < HOPS.length - 1 ? ' →' : '';
+    return `<li data-reached="${state}"><small>${hop}${arrow}</small></li>`;
+  }).join('');
+}
+
+/// Put the fetched page on screen, in an iframe built for this one service.
+///
+/// Building it here rather than reusing one from the markup is not tidiness: an
+/// iframe that is `display:none` when its `srcdoc` is first assigned never
+/// renders that document, and no later assignment recovers it. A fresh element
+/// also means each service starts in a brand-new opaque-origin document, and
+/// closing the viewer destroys it rather than blanking it.
+function mountFrame(html) {
+  const frame = document.createElement('iframe');
+  // allow-scripts WITHOUT allow-same-origin: the fetched page gets an opaque
+  // origin, so it can run its own code but cannot reach dev.site's DOM, storage
+  // or cookies.
+  frame.setAttribute('sandbox', 'allow-scripts');
+  frame.title = 'Local service';
+  frame.srcdoc = html;
+  $('viewer-body').replaceChildren(frame);
+}
+
+/// Pico's modal convention: the `open` attribute on the dialog, and a lock class
+/// on the document while it is up.
+function openViewer() {
+  document.documentElement.classList.add('modal-is-open', 'modal-is-opening');
+  $('viewer').setAttribute('open', '');
+  setTimeout(() => document.documentElement.classList.remove('modal-is-opening'), 400);
 }
 
 function closeViewer() {
-  const viewer = $('viewer');
-  viewer.classList.remove('open');
-  viewer.hidden = true;
-  $('frame').srcdoc = '';
+  document.documentElement.classList.remove('modal-is-open', 'modal-is-opening');
+  $('viewer').removeAttribute('open');
+  $('viewer-body').replaceChildren();
 }
 
-async function openService(entry) {
-  const viewer = $('viewer');
+async function openService(item) {
   const status = $('viewer-status');
 
-  viewer.hidden = false;
-  viewer.classList.add('open');
-  $('viewer-title').innerHTML = entry.owner_handle
-    ? `<span class="of">@${esc(entry.owner_handle)}’s</span> ${esc(entry.name)}`
-    : esc(entry.name);
-  $('frame').srcdoc = '';
-  status.className = 'viewer-status';
-  status.textContent = 'creating a browser endpoint';
-  paintPath(0);
+  $('viewer-title').textContent = item.owner_handle
+    ? `${item.name} — @${item.owner_handle}`
+    : item.name;
+  $('viewer-body').replaceChildren();
+  status.removeAttribute('aria-invalid');
+  status.setAttribute('aria-busy', 'true');
+  status.textContent = 'Creating a browser endpoint';
+  paintHops(0);
+  openViewer();
 
   try {
     if (!endpoint) endpoint = await BrowserEndpoint.create();
-    paintPath(1);
+    paintHops(1);
 
-    status.textContent = 'requesting a capability';
+    status.textContent = 'Requesting a capability';
     // The capability is bound to this endpoint's key; the daemon checks that binding
     // against the authenticated peer of the connection.
     const grant = await api('/api/capability', {
       method: 'POST',
       body: JSON.stringify({
-        resource_id: entry.resource_id,
+        resource_id: item.resource_id,
         browser_endpoint_id: endpoint.endpointId,
       }),
     });
 
-    paintPath(2);
-    status.textContent = 'connecting through the relay';
+    paintHops(2);
+    status.textContent = 'Connecting through the relay';
     const html = await endpoint.fetchPage(
       grant.daemon_endpoint_id,
       grant.relay_url,
@@ -268,11 +399,13 @@ async function openService(entry) {
       '/',
     );
 
-    paintPath(3);
-    $('frame').srcdoc = html;
-    status.classList.add('hidden');
+    paintHops(3);
+    mountFrame(html);
+    status.removeAttribute('aria-busy');
+    status.textContent = '';
   } catch (err) {
-    status.className = 'viewer-status err';
+    status.removeAttribute('aria-busy');
+    status.setAttribute('aria-invalid', 'true');
     status.textContent = String(err.message || err);
   }
 }
@@ -280,55 +413,64 @@ async function openService(entry) {
 // -- setup views ---------------------------------------------------------------
 
 function renderSignedOut() {
+  clearTheme();
   main.innerHTML = `
-    <div class="block">
-      <h1>Your public work and your <em>private</em> local services, on one page.</h1>
-      <p>
-        Private services stay on your machine. Nothing is deployed, no port is opened, and
-        the page you are reading never carries their traffic.
-      </p>
-      <button class="action" id="start">sign in</button>
-    </div>`;
+    <article>
+      <hgroup>
+        <h1>Your public work and your private local services, on one page.</h1>
+        <p>
+          Private services stay on your machine. Nothing is deployed, no port is opened,
+          and the page you are reading never carries their traffic.
+        </p>
+      </hgroup>
+      <button id="start">Sign in</button>
+    </article>`;
   $('start').addEventListener('click', startSignIn);
 }
 
 function renderClaimHandle() {
+  clearTheme();
   main.innerHTML = `
-    <div class="block">
-      <h1>Choose a <em>handle</em>.</h1>
-      <p>It becomes the address of your profile. Letters, digits, hyphens and underscores.</p>
-      <div class="field">
-        <input id="handle" placeholder="dami" autocomplete="off" spellcheck="false">
-        <button class="action" id="claim">claim</button>
-      </div>
-      <p class="error" id="handle-error" hidden></p>
-    </div>`;
+    <article>
+      <hgroup>
+        <h1>Choose a handle.</h1>
+        <p>It becomes the address of your profile. Letters, digits, hyphens and underscores.</p>
+      </hgroup>
+      <form id="claim-form">
+        <fieldset role="group">
+          <input id="handle" name="handle" placeholder="dami" autocomplete="off" spellcheck="false"
+                 aria-label="Handle" required>
+          <button type="submit">Claim</button>
+        </fieldset>
+        <small id="claim-note"></small>
+      </form>
+    </article>`;
 
-  const submit = async () => {
-    const error = $('handle-error');
-    error.hidden = true;
+  $('claim-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const field = $('handle');
+    const note = $('claim-note');
     try {
       const result = await api('/api/profile', {
         method: 'POST',
-        body: JSON.stringify({ handle: $('handle').value }),
+        body: JSON.stringify({ handle: field.value }),
       });
       location.assign(`/@${result.handle}`);
     } catch (err) {
-      error.textContent = err.message;
-      error.hidden = false;
+      field.setAttribute('aria-invalid', 'true');
+      note.innerHTML = `<span class="error">${esc(err.message)}</span>`;
     }
-  };
-  $('claim').addEventListener('click', submit);
-  $('handle').addEventListener('keydown', (e) => { if (e.key === 'Enter') submit(); });
+  });
 }
 
+/// Shown once, immediately after signing in, and never persisted.
 function renderCliToken(token) {
-  const block = document.createElement('div');
-  block.className = 'token-box';
-  block.innerHTML = `
-    <p>To configure this machine, run <code style="display:inline;color:var(--ink-dim)">devsite login</code> and paste:</p>
-    <code>${esc(token)}</code>`;
-  main.querySelector('.block')?.append(block);
+  const article = document.createElement('article');
+  article.innerHTML = `
+    <header><strong>Configure this machine</strong></header>
+    <p>Run <code>devsite login</code> and paste:</p>
+    <pre><code class="token">${esc(token)}</code></pre>`;
+  main.append(article);
 }
 
 // -- routing -------------------------------------------------------------------
@@ -337,11 +479,10 @@ async function route() {
   const path = location.pathname;
 
   if (path === '/auth/callback') {
-    main.innerHTML = '<div class="block"><h1>Signing you in…</h1></div>';
+    main.innerHTML = '<article aria-busy="true">Signing you in…</article>';
     try {
       const { session, returnTo } = await completeSignIn();
       me = { account_id: session.account_id, handle: session.handle };
-      // Keep the CLI token in memory only for this render; it is not persisted anywhere.
       history.replaceState({}, '', session.handle ? `/@${session.handle}` : '/');
       renderSession();
       if (!session.handle) {
@@ -352,7 +493,11 @@ async function route() {
       renderCliToken(session.token);
       void returnTo;
     } catch (err) {
-      main.innerHTML = `<div class="block"><h1>Sign-in failed.</h1><p class="error">${esc(err.message)}</p><button class="action" id="retry">try again</button></div>`;
+      main.innerHTML = `
+        <article>
+          <hgroup><h1>Sign-in failed.</h1><p class="error">${esc(err.message)}</p></hgroup>
+          <button id="retry">Try again</button>
+        </article>`;
       $('retry').addEventListener('click', startSignIn);
     }
     return;
@@ -380,7 +525,14 @@ async function showProfile(handle) {
   try {
     renderProfile(await api(`/api/profile/${encodeURIComponent(handle)}`));
   } catch (err) {
-    main.innerHTML = `<div class="block"><h1>No such profile.</h1><p>@${esc(handle)} ${esc(err.message === '404' ? 'does not exist' : err.message)}</p></div>`;
+    clearTheme();
+    main.innerHTML = `
+      <article>
+        <hgroup>
+          <h1>No such profile.</h1>
+          <p>@${esc(handle)} ${esc(err.message === '404' ? 'does not exist' : err.message)}</p>
+        </hgroup>
+      </article>`;
   }
 }
 
@@ -403,4 +555,5 @@ $('viewer').addEventListener('click', (e) => { if (e.target === $('viewer')) clo
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeViewer(); });
 
 BrowserEndpoint = await loadEndpointModule();
+main.removeAttribute('aria-busy');
 await route();

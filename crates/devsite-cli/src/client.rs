@@ -46,6 +46,16 @@ impl ControlPlane {
         decode(response, path).await
     }
 
+    pub async fn put<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
+        let response = self
+            .request(reqwest::Method::PUT, path)
+            .json(body)
+            .send()
+            .await
+            .with_context(|| format!("PUT {path}"))?;
+        decode(response, path).await
+    }
+
     /// POST where a 2xx with no body is the expected success.
     pub async fn post_empty<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
         let response = self

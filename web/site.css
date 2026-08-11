@@ -1,0 +1,156 @@
+/* dev.site — everything that is not Pico.
+ *
+ * Pico 2 does the work. This file supplies the typeface, the handful of layout
+ * rules Pico has no opinion about, and nothing else. Anything added here has to
+ * earn its place against a Pico element or class that would have done the job.
+ *
+ * Colours are deliberately absent: every colour on the page comes from a
+ * --pico-* variable, which is what makes a user theme a small, checkable list
+ * of variable assignments rather than a stylesheet. See docs/profile-template.md.
+ *
+ * The one literal colour is the white behind the viewer's iframe. A fetched page
+ * is not part of the profile — it gets the white a browser tab would have given
+ * it, rather than showing a stranger's theme through its own background.
+ */
+
+/* Open Sans, vendored. The file is a variable font covering 300–800, but it is
+ * declared twice at fixed weights instead of as a range, so that a request for
+ * any other weight — Pico asks for 600 in places — snaps to 700 rather than
+ * rendering an in-between instance. Two weights, by construction. */
+@font-face {
+  font-family: 'Open Sans';
+  src: url('/vendor/fonts/open-sans-latin.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Open Sans';
+  src: url('/vendor/fonts/open-sans-latin.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'Open Sans';
+  src: url('/vendor/fonts/open-sans-latin-ext.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+@font-face {
+  font-family: 'Open Sans';
+  src: url('/vendor/fonts/open-sans-latin-ext.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+:root {
+  --pico-font-family-sans-serif: 'Open Sans', system-ui, sans-serif;
+  --pico-font-family: var(--pico-font-family-sans-serif);
+}
+
+/* -- layout Pico has no opinion about ------------------------------------- */
+
+body > main {
+  padding-block: var(--pico-block-spacing-vertical);
+}
+
+/* A group heading labels a list; it is not a heading in a document. Still an
+ * h2 — the outline should read public / private / shared — but sized and
+ * coloured as the label it is, so the profile name stays the loudest thing. */
+.group > h2 {
+  margin-bottom: calc(var(--pico-typography-spacing-vertical) * 0.5);
+  color: var(--pico-muted-color);
+  font-size: 1rem;
+}
+.group + .group {
+  margin-top: var(--pico-block-spacing-vertical);
+}
+
+/* A list of things on a profile: name on the left, state on the right.
+ * `list-style` is set on the items, not the list: Pico styles `ul li` directly,
+ * and a directly-matching rule beats an inherited one however specific. */
+.entries {
+  margin: 0;
+  padding: 0;
+}
+.entries > li {
+  list-style: none;
+  display: flex;
+  gap: var(--pico-spacing);
+  align-items: center;
+  justify-content: space-between;
+  padding-block: calc(var(--pico-spacing) * 0.5);
+  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+.entries > li:last-child {
+  border-bottom: 0;
+}
+/* Entry actions are buttons and links; neither should carry a block margin here. */
+.entries > li > :is(a, button, [role='button']) {
+  margin-bottom: 0;
+}
+.entries .state {
+  white-space: nowrap;
+}
+
+/* Reachability reuses Pico's own semantic colours, so a user theme that changes
+ * --pico-ins-color changes this too. */
+.entries > li[data-state='online'] .state {
+  color: var(--pico-ins-color);
+}
+.entries > li[data-state='offline'] .state {
+  color: var(--pico-del-color);
+}
+
+/* -- the viewer ------------------------------------------------------------ */
+
+/* Wider than Pico's 700px modal: this one holds a whole web page. */
+#viewer > article {
+  max-width: min(64rem, 100%);
+}
+#viewer-body iframe {
+  display: block;
+  width: 100%;
+  height: min(60vh, 40rem);
+  border: var(--pico-border-width) solid var(--pico-muted-border-color);
+  border-radius: var(--pico-border-radius);
+  background: #fff;
+}
+#viewer .hops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 var(--pico-spacing);
+  padding: 0;
+}
+#viewer .hops > li {
+  list-style: none;
+}
+#viewer .hops > li[data-reached='yes'] {
+  color: var(--pico-color);
+}
+#viewer .hops > li[data-reached='now'] {
+  color: var(--pico-primary);
+}
+
+/* Refusals and confirmations. Pico's `ins` and `del` colours, without their
+ * underline and strikethrough — a rejected declaration has to stay readable. */
+.error {
+  color: var(--pico-del-color);
+}
+.ok {
+  color: var(--pico-ins-color);
+}
+
+/* The token shown once after sign-in. Long, opaque, and meant to be copied. */
+.token {
+  word-break: break-all;
+  white-space: pre-wrap;
+}

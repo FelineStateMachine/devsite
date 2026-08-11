@@ -104,9 +104,42 @@ daemon has no effect until it restarts. It fails safe — the control plane repo
 resource offline rather than issuing capabilities for something unreachable — but config
 hot-reload is the obvious fix.
 
-## Next — UI
+## M7 — The profile page ✅
 
-The data plane and authorization model are done and proven. Remaining work is the profile
-page itself: the MySpace-style user CSS the `profiles.custom_css` column is reserved for,
-and the surfaces that currently have none — claiming a handle, managing exposures, and
-seeing who a service is shared with.
+The first UI was a bespoke stylesheet: custom type, hand-drawn leaders, colour used as
+meaning. It has been removed. The page is now semantic HTML styled by Pico CSS 2.1.1, set
+in Open Sans at 400 and 700, both vendored so nothing is fetched from a third party.
+
+The reason is not taste. `profiles.custom_css` was reserved for user styling from the
+start, and user styling is only safe if "is this valid?" has a mechanical answer. Against
+a bespoke stylesheet it does not: the answer depends on which class the author happened to
+name and what it happened to do. Against Pico it does — the whole page is drawn from
+`--pico-*` variables, so a theme can be a list of assignments to named variables with
+per-property value grammars, checked in `theme.rs` and stored canonically.
+
+What follows from that:
+
+- **A theme has no selectors.** It cannot position, hide or overlay anything, and cannot
+  make one profile impersonate another part of the site. It recolours and re-spaces the
+  template; that is the whole of its power.
+- **The theme block is the last stylesheet in the document**, so it wins ties on document
+  order. No user declaration has to out-specify Pico, which is what a selector-based
+  design would have forced.
+- **The alphabet is the injection defence.** Every accepted value is `[0-9a-z#%.,/()+- ]`,
+  so it cannot carry `<`, `"` or `}`. The rendered rule is safe to inline in `<style>` by
+  construction rather than by remembering to escape it.
+- **The whitelist is checked against the vendored Pico.** A variable Pico does not define
+  would be accepted, stored, and silently do nothing — a bug with no error message.
+- **Two weights, by construction.** Open Sans is a variable font here, declared twice at
+  400 and 700 rather than as a range, so Pico's occasional request for 600 resolves to 700
+  instead of rendering an in-between instance.
+
+`GET /api/theme/properties` serves the list from the binary that enforces it, so the
+website, `devsite theme properties` and the docs cannot drift from what is accepted.
+
+See `docs/profile-template.md`.
+
+## Next
+
+Surfaces that still have none: managing exposures from the website, and seeing who a
+service is shared with.

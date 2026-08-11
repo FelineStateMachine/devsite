@@ -17,6 +17,7 @@ use crate::auth::{self, ShooVerifier};
 use crate::db::{Db, DaemonPresence, ResourceKind};
 use crate::issuer::Issuer;
 use crate::policy::{can_view, Visibility};
+use crate::theme;
 
 pub struct AppState {
     pub db: Mutex<Db>,
@@ -172,6 +173,23 @@ pub struct ProfileResponse {
     pub is_owner: bool,
     pub entries: Vec<ProfileEntry>,
     pub shared_with_me: Vec<ProfileEntry>,
+    /// The owner's theme: validated `--pico-*` assignments, in the order they
+    /// were written. The page turns these into one rule scoped to the profile.
+    pub theme: Vec<theme::Declaration>,
+}
+
+#[derive(Deserialize)]
+pub struct ThemeRequest {
+    /// Declarations only — `--pico-border-radius: 0.5rem;` and so on. Anything
+    /// that is not on the whitelist is a 400 with a reason, never a silent drop.
+    pub css: String,
+}
+
+#[derive(Serialize)]
+pub struct ThemeResponse {
+    /// The theme as stored, after normalisation.
+    pub css: String,
+    pub theme: Vec<theme::Declaration>,
 }
 
 #[derive(Deserialize)]
@@ -199,6 +217,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/profile", post(claim_handle))
         .route("/api/resources", post(create_resource).get(list_resources))
         .route("/api/daemon/heartbeat", post(heartbeat))
+        .route("/api/theme", get(read_theme).put(write_theme))
+        .route("/api/theme/properties", get(theme_properties))
         .route("/api/profile/{handle}", get(profile))
         .route("/api/capability", post(capability))
         .with_state(state)
@@ -409,6 +429,56 @@ async fn heartbeat(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// -- themes --------------------------------------------------------------------
+
+/// The properties a theme may set, and what each one accepts.
+///
+/// Served by the same binary that enforces the list, so the CLI, the website and
+/// the docs cannot drift from what is actually accepted.
+async fn theme_properties() -> impl IntoResponse {
+    Json(serde_json::json!({
+        "properties": theme::properties()
+            .map(|(name, accepts)| serde_json::json!({ "name": name, "accepts": accepts }))
+            .collect::<Vec<_>>()
+    }))
+}
+
+async fn read_theme(State(state): State<Shared>, headers: HeaderMap) -> ApiResult<impl IntoResponse> {
+    let account = require_account(&state, &headers)?;
+    let css = {
+        let db = state.db.lock().unwrap();
+        db.custom_css(account).map_err(ApiError::internal)?
+    };
+    let css = css.unwrap_or_default();
+    Ok(Json(ThemeResponse {
+        theme: theme::parse(&css).unwrap_or_default(),
+        css,
+    }))
+}
+
+async fn write_theme(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<ThemeRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let account = require_account(&state, &headers)?;
+
+    // Validated here, once, before anything is stored. Every later read — the
+    // profile page, the CLI, this endpoint — can then treat the column as
+    // already-checked rather than re-deciding what is safe.
+    let declarations = theme::parse(&body.css).map_err(ApiError::bad_request)?;
+    let css = theme::to_css(&declarations);
+
+    let db = state.db.lock().unwrap();
+    db.set_custom_css(account, (!css.is_empty()).then_some(css.as_str()))
+        .map_err(ApiError::internal)?;
+
+    Ok(Json(ThemeResponse {
+        css,
+        theme: declarations,
+    }))
+}
+
 async fn profile(
     State(state): State<Shared>,
     headers: HeaderMap,
@@ -467,11 +537,24 @@ async fn profile(
         }
     }
 
+    // Stored themes are canonical, so re-parsing them here is cheap and always
+    // succeeds. It is not merely a formality: if a property is ever retired from
+    // the whitelist, a profile styled with it degrades to the default rather
+    // than serving a rule the current build no longer stands behind.
+    let theme = match db.custom_css(owner.id).map_err(ApiError::internal)? {
+        Some(css) => theme::parse(&css).unwrap_or_else(|err| {
+            tracing::warn!(handle = %handle, "stored theme no longer validates: {err}");
+            Vec::new()
+        }),
+        None => Vec::new(),
+    };
+
     Ok(Json(ProfileResponse {
         handle,
         is_owner: viewer == Some(owner.id),
         entries,
         shared_with_me,
+        theme,
     }))
 }
 

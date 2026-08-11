@@ -51,6 +51,9 @@ enum Command {
         #[arg(long, value_name = "@handle")]
         share: Vec<String>,
     },
+    /// Profile appearance.
+    #[command(subcommand)]
+    Theme(ThemeCommand),
     /// Show what this machine is configured to serve.
     Status,
     /// Daemon control.
@@ -80,6 +83,36 @@ enum LinkCommand {
 enum DaemonCommand {
     /// Run the daemon in the foreground.
     Run,
+}
+
+/// A theme is a list of `--pico-*` declarations, checked by the control plane
+/// against a fixed whitelist. There is no theme dropdown, and no arbitrary CSS.
+#[derive(Subcommand)]
+enum ThemeCommand {
+    /// Print the theme currently applied to your profile.
+    Show,
+    /// Replace your theme with declarations read from a file, or `-` for stdin.
+    Set { file: String },
+    /// Remove your theme and go back to the defaults.
+    Clear,
+    /// List every property a theme may set, and what each one accepts.
+    Properties,
+}
+
+#[derive(Deserialize)]
+struct ThemeResponse {
+    css: String,
+}
+
+#[derive(Deserialize)]
+struct ThemeProperties {
+    properties: Vec<ThemeProperty>,
+}
+
+#[derive(Deserialize)]
+struct ThemeProperty {
+    name: String,
+    accepts: String,
 }
 
 #[derive(Deserialize)]
@@ -125,6 +158,7 @@ async fn main() -> Result<()> {
             private,
             share,
         } => expose(&paths, &cli.server, origin, &name, public, private, share).await,
+        Command::Theme(command) => theme(&paths, &cli.server, command).await,
         Command::Status => status(&paths),
         Command::Daemon(DaemonCommand::Run) => run_daemon(&paths, &cli.server).await,
     }
@@ -272,6 +306,52 @@ async fn expose(
     }
     println!("  resource id {resource_id}");
     println!("\nrun `devsite daemon run` to serve it.");
+    Ok(())
+}
+
+async fn theme(paths: &Paths, server: &str, command: ThemeCommand) -> Result<()> {
+    // The property list is public: it is the documentation, and it comes from
+    // the binary that enforces it rather than from a copy kept here.
+    if let ThemeCommand::Properties = command {
+        let api = ControlPlane::new(server, None);
+        let listing: ThemeProperties = api.get("/api/theme/properties").await?;
+        for property in listing.properties {
+            println!("{:<44} {}", property.name, property.accepts);
+        }
+        return Ok(());
+    }
+
+    let config = load_authenticated(paths)?;
+    let api = ControlPlane::new(server, config.session_token.clone());
+
+    match command {
+        ThemeCommand::Properties => unreachable!("handled above, before authentication"),
+        ThemeCommand::Show => {
+            let theme: ThemeResponse = api.get("/api/theme").await?;
+            if theme.css.trim().is_empty() {
+                println!("no theme set — run `devsite theme set <file>`");
+            } else {
+                print!("{}", theme.css);
+            }
+        }
+        ThemeCommand::Set { file } => {
+            let css = if file == "-" {
+                std::io::read_to_string(std::io::stdin())?
+            } else {
+                std::fs::read_to_string(&file).with_context(|| format!("reading {file}"))?
+            };
+            // The server is the only validator. Rejections arrive as its own
+            // message — "`--pico-primary: wine` — expected a colour, e.g. …" —
+            // and are printed as-is rather than re-worded here.
+            let saved: ThemeResponse = api.put("/api/theme", &serde_json::json!({ "css": css })).await?;
+            print!("{}", saved.css);
+            println!("theme saved");
+        }
+        ThemeCommand::Clear => {
+            let _: ThemeResponse = api.put("/api/theme", &serde_json::json!({ "css": "" })).await?;
+            println!("theme cleared");
+        }
+    }
     Ok(())
 }
 

@@ -385,6 +385,36 @@ impl Db {
             .collect()
     }
 
+    // -- profiles ---------------------------------------------------------------
+
+    /// The account's stored theme, as the canonical declaration text written by
+    /// `crate::theme::to_css`. Nothing else is ever written to this column.
+    pub fn custom_css(&self, account: AccountId) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT custom_css FROM profiles WHERE account_id = ?1",
+                params![account.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .filter(|css| !css.trim().is_empty()))
+    }
+
+    /// Replace the account's theme. `None` clears it.
+    ///
+    /// Upserts because the profile row is created when a handle is claimed, and
+    /// an account that predates that is still allowed to have a theme.
+    pub fn set_custom_css(&self, account: AccountId, css: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO profiles (account_id, custom_css) VALUES (?1, ?2)
+             ON CONFLICT(account_id) DO UPDATE SET custom_css = excluded.custom_css",
+            params![account.to_string(), css],
+        )?;
+        Ok(())
+    }
+
     // -- daemon presence --------------------------------------------------------
 
     pub fn record_heartbeat(
@@ -608,6 +638,21 @@ mod tests {
             .create_resource(frank.id, "Agent", ResourceKind::Service, Visibility::Private, None, 0)
             .unwrap();
         assert_ne!(a, b, "names are scoped to their owner");
+    }
+
+    #[test]
+    fn a_theme_round_trips_and_can_be_cleared() {
+        let (db, dami, _) = seeded();
+        assert!(db.custom_css(dami.id).unwrap().is_none());
+
+        db.set_custom_css(dami.id, Some("--pico-primary: #7b3fe4;\n")).unwrap();
+        assert_eq!(
+            db.custom_css(dami.id).unwrap().as_deref(),
+            Some("--pico-primary: #7b3fe4;\n")
+        );
+
+        db.set_custom_css(dami.id, None).unwrap();
+        assert!(db.custom_css(dami.id).unwrap().is_none());
     }
 
     #[test]
