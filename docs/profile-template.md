@@ -61,9 +61,6 @@ changes here and changes to the whitelist belong in the same commit.
       </section>
       <!-- data-visibility is one of: public · private · shared · shared-with-me -->
     </article>
-
-    <!-- owner only -->
-    <details class="appearance">…theme editor…</details>
   </main>
 
   <dialog id="viewer">…the service, in a sandboxed iframe…</dialog>
@@ -130,7 +127,11 @@ you visit cannot use its theme to disguise itself as another part of the site.
 
 ## Setting one
 
-From the website, on your own profile, under **Appearance**. Or:
+From the CLI, and only from the CLI. The website is where a profile is read, not
+where it is written — links, exposures, sharing and themes are all set with
+`devsite`, and a theme is no more a browser concern than an exposure is. The one
+exception is claiming a handle, which has to happen in the browser because that
+is where signing in finishes.
 
 ```bash
 devsite theme properties          # what you may set

@@ -163,7 +163,6 @@ pub struct ProfileEntry {
 #[derive(Serialize)]
 pub struct ProfileResponse {
     pub handle: String,
-    pub is_owner: bool,
     pub entries: Vec<ProfileEntry>,
     pub shared_with_me: Vec<ProfileEntry>,
     /// The owner's theme: validated `--pico-*` assignments, in the order they
@@ -523,9 +522,12 @@ async fn profile(
         None => Vec::new(),
     };
 
+    // No `is_owner`: it existed to decide whether to draw the theme editor, and
+    // the website no longer writes anything. What the owner sees that others do
+    // not is already expressed by the entries themselves — private resources,
+    // and the "shared with me" list, which is populated for the owner alone.
     Ok(Json(ProfileResponse {
         handle,
-        is_owner: viewer == Some(owner.id),
         entries,
         shared_with_me,
         theme,

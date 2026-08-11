@@ -1,5 +1,11 @@
 // dev.site — profile rendering, Shoo sign-in, and opening a local service over Iroh.
 //
+// The website reads; `devsite` writes. Links, exposures, sharing and themes are
+// all set from the CLI, so the only thing here that changes server state is
+// claiming a handle — which has to happen in the browser because that is where
+// you finish signing in. Anything else that mutates a profile belongs in the
+// CLI, next to the rest of it.
+//
 // The markup this file produces is a contract, not an implementation detail: a
 // profile's theme is a list of --pico-* assignments that only mean anything
 // against the elements below. Keep it semantic, keep it documented, and change
@@ -263,57 +269,6 @@ function renderProfile(profile) {
   }
 
   main.append(article);
-  if (profile.is_owner) main.append(appearanceEditor(profile));
-}
-
-/// The theme editor, on your own profile only.
-///
-/// It deliberately shows the stored text rather than a set of colour pickers:
-/// the thing being edited really is CSS, and the server's refusals are specific
-/// enough to be worth reading.
-function appearanceEditor(profile) {
-  const details = document.createElement('details');
-  details.className = 'appearance';
-  details.innerHTML = `
-    <summary>Appearance</summary>
-    <form>
-      <label for="theme-css">
-        Pico variables, as declarations. Everything else is refused.
-        <textarea id="theme-css" name="css" rows="8" spellcheck="false"
-          placeholder="--devsite-scheme: dark;&#10;--pico-primary: #7b3fe4;&#10;--pico-border-radius: 0.5rem;"></textarea>
-      </label>
-      <small id="theme-note">
-        <a href="/api/theme/properties" target="_blank" rel="noopener">What you may set</a>
-      </small>
-      <fieldset role="group">
-        <button type="submit">Save</button>
-        <button type="button" class="secondary outline" id="theme-clear">Clear</button>
-      </fieldset>
-    </form>`;
-
-  const form = details.querySelector('form');
-  const field = details.querySelector('#theme-css');
-  const note = details.querySelector('#theme-note');
-  field.value = profile.theme
-    .map((d) => `${d.property}: ${d.value};`)
-    .join('\n');
-
-  const save = async (css) => {
-    try {
-      const saved = await api('/api/theme', { method: 'PUT', body: JSON.stringify({ css }) });
-      field.value = saved.css.trimEnd();
-      field.removeAttribute('aria-invalid');
-      note.innerHTML = '<span class="ok">Saved.</span>';
-      applyTheme(profile.handle, saved.theme);
-    } catch (err) {
-      field.setAttribute('aria-invalid', 'true');
-      note.innerHTML = `<span class="error">${esc(err.message)}</span>`;
-    }
-  };
-
-  form.addEventListener('submit', (e) => { e.preventDefault(); save(field.value); });
-  details.querySelector('#theme-clear').addEventListener('click', () => save(''));
-  return details;
 }
 
 // -- opening a service ---------------------------------------------------------
