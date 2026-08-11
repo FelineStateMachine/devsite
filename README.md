@@ -96,19 +96,24 @@ applies to, the whitelist, and the grammars are in
 | `DEVSITE_PUBLIC_ORIGIN` | *(required)* | The exact origin browsers load. **Changing it orphans every account** — Shoo derives both `client_id` and the pairwise subject from it. |
 | `DEVSITE_BIND` | `127.0.0.1:4000` | |
 | `DEVSITE_DB` | `devsite.db` | |
-| `DEVSITE_STATE_DIR` | `.devsite-state` | Holds the capability signing key. |
+| `DEVSITE_STATE_DIR` | `.devsite-state` | Holds the capability signing key, when it is not supplied directly. |
+| `DEVSITE_SIGNING_KEY` | *(unset)* | The capability signing key as 64 hex characters. Takes precedence over the state directory; a bad value is fatal rather than a reason to generate a new key. For hosts where a secret store beats a file. |
 | `DEVSITE_HOME` | platform config dir | Daemon identity and config. Set it to run several daemons on one machine. |
 
 ## Deploying
 
-`deploy/` publishes the control plane at `https://dev.site` through Cloudflare Tunnel — so
-it has no inbound port either. See `deploy/README.md`.
+The control plane runs on Fly: one machine, one volume, SQLite on it. `fly.toml` and
+`Dockerfile` are the deployment; `fly deploy` builds both the wasm bundle and the binary
+inside the image, so nothing is uploaded from a laptop.
 
 ```bash
-cloudflared tunnel login     # once, opens a browser
-./deploy/setup-tunnel.sh     # creates the tunnel + DNS
-./deploy/run.sh              # control plane + tunnel
+fly deploy
 ```
+
+Two settings cannot be undone — the public origin, and the capability signing key, which is
+a Fly secret rather than a file so that losing a volume does not lose every daemon's trust.
+First-time setup, DNS, certificates and backups are in
+[`deploy/README.md`](deploy/README.md).
 
 ## Layout
 

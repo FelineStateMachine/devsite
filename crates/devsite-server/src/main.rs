@@ -34,6 +34,9 @@ struct Config {
     database: String,
     state_dir: PathBuf,
     web_root: PathBuf,
+    /// The capability signing key as 64 hex characters, when it is supplied
+    /// directly rather than kept in `state_dir`. See `Issuer::from_hex`.
+    signing_key: Option<String>,
 }
 
 impl Config {
@@ -53,7 +56,22 @@ impl Config {
             web_root: std::env::var("DEVSITE_WEB_ROOT")
                 .unwrap_or_else(|_| "web".to_string())
                 .into(),
+            signing_key: std::env::var("DEVSITE_SIGNING_KEY").ok().filter(|k| !k.trim().is_empty()),
         })
+    }
+
+    /// The capability issuer this configuration asks for.
+    ///
+    /// A supplied key wins over the state directory, and a bad one is fatal
+    /// rather than something to fall back from — see `Issuer::from_hex`.
+    fn issuer(&self) -> Result<Issuer> {
+        match &self.signing_key {
+            Some(hex) => {
+                tracing::info!("capability signing key supplied by DEVSITE_SIGNING_KEY");
+                Issuer::from_hex(hex, &self.public_origin)
+            }
+            None => Issuer::load_or_create(&self.state_dir, &self.public_origin),
+        }
     }
 }
 
@@ -78,7 +96,7 @@ async fn main() -> Result<()> {
     }
 
     let db = Db::open(&config.database)?;
-    let issuer = Issuer::load_or_create(&config.state_dir, &config.public_origin)?;
+    let issuer = config.issuer()?;
     let shoo = ShooVerifier::new(&config.public_origin);
 
     tracing::info!(

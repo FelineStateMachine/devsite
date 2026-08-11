@@ -1,0 +1,22 @@
+# Everything here is either rebuilt inside the image or must never leave the
+# machine it is on.
+
+/target
+/web/pkg
+
+# The live database and the capability signing key. The key reaching a build
+# context — and from there an image layer — is exactly the leak this file is for.
+/data
+/.devsite-state
+*.db
+*.db-wal
+*.db-shm
+*.key
+*.pem
+
+/.git
+/.github
+/output
+/.playwright-cli
+/.e2e
+deploy/cloudflared.yml

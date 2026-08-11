@@ -18,7 +18,33 @@ pub struct Issuer {
 }
 
 impl Issuer {
-    /// Load the signing key, generating it on first run.
+    /// Load a signing key supplied directly, as 64 hex characters.
+    ///
+    /// For hosts where the filesystem is the wrong place to keep it. On Fly the
+    /// key is a secret: encrypted at rest, injected into the machine's
+    /// environment, and — the part that matters — not tied to the survival of one
+    /// volume on one host. Losing this key is the single unrecoverable failure in
+    /// the system, because every daemon pinned its public half at `devsite login`
+    /// and refuses capabilities signed by anything else.
+    ///
+    /// An unusable value is an error, never a fallback to generating a fresh key:
+    /// that would break every daemon in the field while looking perfectly healthy
+    /// from here.
+    pub fn from_hex(hex: &str, issuer_name: &str) -> Result<Self> {
+        let raw = data_encoding::HEXLOWER_PERMISSIVE
+            .decode(hex.trim().as_bytes())
+            .context("the signing key is not hex")?;
+        let bytes: [u8; 32] = raw
+            .as_slice()
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("the signing key is not 32 bytes"))?;
+        Ok(Self {
+            issuer_name: issuer_name.to_string(),
+            key: SigningKey::from_bytes(&bytes),
+        })
+    }
+
+    /// Load the signing key from the state directory, generating it on first run.
     pub fn load_or_create(state_dir: &Path, issuer_name: &str) -> Result<Self> {
         let path = state_dir.join("capability_signing.key");
         let key = if path.exists() {
@@ -129,6 +155,37 @@ mod tests {
             .is_err());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_supplied_key_is_used_verbatim() {
+        // The same 32 bytes must always yield the same public half, whether they
+        // arrived from a file or from a secret: a deployment that moves hosts
+        // keeps its identity only if this holds.
+        let hex = data_encoding::HEXLOWER.encode(&[9u8; 32]);
+        let from_secret = Issuer::from_hex(&hex, "https://dev.site").unwrap();
+        let expected = SigningKey::from_bytes(&[9; 32]).verifying_key();
+        assert_eq!(
+            from_secret.public_key_hex(),
+            data_encoding::HEXLOWER.encode(expected.as_bytes())
+        );
+        // Uppercase and stray whitespace are what a shell pipeline produces.
+        assert_eq!(
+            Issuer::from_hex(&format!("  {}\n", hex.to_uppercase()), "https://dev.site")
+                .unwrap()
+                .public_key_hex(),
+            from_secret.public_key_hex()
+        );
+    }
+
+    #[test]
+    fn an_unusable_supplied_key_is_refused_rather_than_replaced() {
+        for bad in ["", "not-hex", &"ab".repeat(31), &"ab".repeat(33)] {
+            assert!(
+                Issuer::from_hex(bad, "https://dev.site").is_err(),
+                "{bad:?} should be refused"
+            );
+        }
     }
 
     #[test]

@@ -1,57 +1,123 @@
 # Deploying dev.site
 
-The control plane runs as an ordinary process; Cloudflare Tunnel publishes it at
-`https://dev.site` with a real certificate and **no inbound port** — the same property the
-product itself is built on.
+The control plane runs on [Fly](https://fly.io): one machine, one volume, SQLite on it.
+`fly.toml` and `Dockerfile` in the repository root are the whole deployment.
+
+One machine is deliberate. A Fly volume attaches to a single machine in a single region,
+and nothing here wants a second writer. Since the heartbeat went away the database is
+read-mostly — a few hundred bytes per account, and a handful of writes per user per
+lifetime — so this shape has a lot of room in it.
+
+## The two things that cannot be undone
+
+**`DEVSITE_PUBLIC_ORIGIN`.** Shoo derives `client_id` and every user's pairwise subject
+from it. Changing it after anyone has signed in does not migrate accounts, it orphans them.
+It lives in `fly.toml` and must match the hostname browsers actually load.
+
+**The capability signing key.** Every daemon pinned its public half at `devsite login` and
+refuses capabilities signed by anything else. Lose it and every daemon in the world stops
+working, with no way to recover but re-running `devsite login` everywhere.
+
+So it is a Fly secret rather than a file on the volume: encrypted at rest, injected into
+the machine's environment, and not tied to the survival of one volume on one host. The
+server prefers `DEVSITE_SIGNING_KEY` when it is set and falls back to `DEVSITE_STATE_DIR`
+when it is not, which is what keeps local development unchanged.
 
 ## One-time setup
 
-Both of these open a browser and need you at the keyboard.
-
 ```bash
-# 1. Authorize cloudflared against the Cloudflare account holding the dev.site zone.
-cloudflared tunnel login
+fly apps create devsite
+fly volumes create devsite_data --region sjc --size 1
 
-# 2. Create the tunnel and point the hostname at it.
-./deploy/setup-tunnel.sh
+# 32 random bytes as 64 hex characters. Generate it here, keep a copy somewhere
+# you would still have after losing this laptop, and never commit it.
+fly secrets set DEVSITE_SIGNING_KEY="$(openssl rand -hex 32)"
 ```
 
-`setup-tunnel.sh` creates a tunnel named `devsite`, writes `deploy/cloudflared.yml`, and
-adds the DNS records for `dev.site` and `www.dev.site`.
-
-## Running
+To carry an existing key over instead of generating one:
 
 ```bash
-./deploy/run.sh
+fly secrets set DEVSITE_SIGNING_KEY="$(xxd -p -c 64 data/state/capability_signing.key)"
 ```
 
-That starts the control plane on `127.0.0.1:4000` and the tunnel in front of it.
+Check it against what daemons pinned before trusting it — `fly logs` prints the public half
+at boot, and `devsite status` prints what the daemon expects.
 
-## The origin is the one irreversible choice
+### The hostname
 
-`DEVSITE_PUBLIC_ORIGIN=https://dev.site` is baked into account identity: Shoo derives both
-`client_id` and each user's pairwise subject from it. Changing it later does not migrate
-accounts — it orphans them. It is set in `deploy/env` and should not change once anyone has
-signed in.
+```bash
+fly ips allocate-v4 --shared
+fly ips allocate-v6
+fly ips list                      # the addresses to point DNS at
+```
 
-## What Cloudflare does and does not see
+At Cloudflare, on the `dev.site` zone, add `A` and `AAAA` records for the apex pointing at
+those addresses, **DNS only — grey cloud, not proxied**. Fly needs to answer the ACME
+challenge on the hostname itself; proxying breaks issuance and puts a second TLS terminator
+in front of a site whose whole argument is about who can see what.
 
-Cloudflare terminates TLS for the control plane, so it sees profile metadata and API calls.
-It never sees private service traffic: the browser's Iroh connection goes to an n0 relay
-directly, and that traffic is end-to-end encrypted between the browser and the daemon.
+```bash
+fly certs add dev.site
+fly certs show dev.site           # until it reports Ready
+```
+
+## Deploying
+
+```bash
+fly deploy
+```
+
+Fly builds the image remotely — there is no need for a local Docker daemon. The build runs
+`scripts/build-wasm.sh --release` and `cargo build --release -p devsite-server` inside the
+image, so `web/pkg/` is never uploaded from a laptop and the bundle always matches the
+source that produced the binary.
+
+A deploy replaces the machine, which means a few seconds where the site is down. That is
+the cost of one volume, and it is the right trade at this size.
+
+## Backups
+
+Fly snapshots volumes daily, five days' retention. That covers the machine dying; it does
+not cover "I want the database on my laptop", which is worth having:
+
+```bash
+fly ssh console -C "sqlite3 /data/devsite.db '.backup /data/backup.db'"
+fly sftp get /data/backup.db ./devsite-backup.db
+```
+
+The signing key is not on the volume and is not in these backups. Keep it separately — it
+is the part that cannot be regenerated.
+
+## Configuration
+
+Set in `fly.toml`, except the secret.
+
+| Variable | Where | Notes |
+| --- | --- | --- |
+| `DEVSITE_PUBLIC_ORIGIN` | `fly.toml` | `https://dev.site`. See above. |
+| `DEVSITE_SIGNING_KEY` | `fly secrets` | Hex. Never in the repository. |
+| `DEVSITE_BIND` | `Dockerfile` | `0.0.0.0:8080`, matching `internal_port`. |
+| `DEVSITE_DB` | `Dockerfile` | `/data/devsite.db`, on the volume. |
+| `DEVSITE_STATE_DIR` | `Dockerfile` | Unused while the secret is set. |
+| `DEVSITE_WEB_ROOT` | `Dockerfile` | `/app/web`, baked into the image. |
+
+## What Fly sees
+
+Fly terminates TLS for the control plane, so it sees profile metadata and API calls — the
+same position Cloudflare was in before. It never sees private service traffic: that goes
+browser-to-daemon over an iroh relay, end-to-end encrypted, and the control plane is not
+even told where the daemon is.
 
 ## Caching
 
-`scripts/build-wasm.sh` publishes the wasm bundle under a content hash
-(`/pkg/<hash>/…`), so it is served `immutable` and cached at the edge indefinitely. The
-manifest naming the current hash, the HTML, and every `/api/` response are `no-cache` or
-`no-store`. Redeploying therefore invalidates nothing and never serves a stale bundle.
+`scripts/build-wasm.sh` publishes the wasm bundle under a content hash (`/pkg/<hash>/…`),
+served `immutable`. The manifest naming the current hash, the HTML, and every `/api/`
+response are `no-cache` or `no-store`. Redeploying therefore invalidates nothing and never
+serves a stale bundle.
 
-## Moving off the tunnel later
+## The previous setup
 
-Nothing above is load-bearing except the hostname. To move to fly.io or a VPS, run the same
-binary there with the same `DEVSITE_PUBLIC_ORIGIN`, copy `devsite.db` and
-`.devsite-state/capability_signing.key`, and repoint DNS.
-
-**Copy the signing key, do not regenerate it.** Every daemon pinned its public half at
-`devsite login`; a new key makes every existing daemon reject every capability.
+`setup-tunnel.sh`, `run.sh` and `env` publish the control plane from a laptop through
+Cloudflare Tunnel. They still work, and are what `https://dev.site` pointed at before Fly.
+Delete them once the cutover has settled — running both against the same hostname is a way
+to be confused about which one is live.

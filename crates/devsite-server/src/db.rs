@@ -138,9 +138,34 @@ impl ResourceKind {
     }
 }
 
+/// Connection settings, applied on every open.
+///
+/// `foreign_keys` is per-connection and defaults to off, so setting it inside
+/// `SCHEMA` only ever covered the connection that created the database — every
+/// later process ran with `ON DELETE CASCADE` silently doing nothing. It belongs
+/// here, where it runs each time.
+///
+/// The rest is about being killed rather than asked to stop, which is the normal
+/// way a process ends on a host that redeploys by replacing the machine. WAL
+/// keeps readers off the writer's back and survives an abrupt exit by replaying
+/// the log; `synchronous = NORMAL` is the documented companion to it, trading a
+/// fsync per commit for one per checkpoint. A crash can then lose the last
+/// transactions, which for this data means a profile edit someone can redo — not
+/// a corrupt database.
+fn configure(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         PRAGMA journal_mode = WAL;
+         PRAGMA synchronous = NORMAL;
+         PRAGMA busy_timeout = 5000;",
+    )
+    .context("configuring the database connection")
+}
+
 impl Db {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path).with_context(|| format!("opening database {path}"))?;
+        configure(&conn)?;
         migrate(&conn)?;
         Ok(Self { conn })
     }
@@ -148,6 +173,7 @@ impl Db {
     #[cfg(test)]
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
+        configure(&conn)?;
         migrate(&conn)?;
         Ok(Self { conn })
     }
@@ -606,6 +632,27 @@ mod tests {
             .create_resource(frank.id, "Agent", ResourceKind::Service, Visibility::Private, None, 0)
             .unwrap();
         assert_ne!(a, b, "names are scoped to their owner");
+    }
+
+    #[test]
+    fn foreign_keys_are_enforced_on_every_connection() {
+        // Not a hypothetical: the pragma lived in SCHEMA, which migrations skip
+        // for an existing database, so every process after the first ran without
+        // it. A share pointing at a deleted resource would have been left behind.
+        let (db, dami, frank) = seeded();
+        let agent = db
+            .create_resource(dami.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .unwrap();
+        db.share_with(agent, frank.id).unwrap();
+
+        db.conn
+            .execute("DELETE FROM resources WHERE id = ?1", params![agent.to_string()])
+            .unwrap();
+
+        assert!(
+            db.resources_shared_with(frank.id).unwrap().is_empty(),
+            "the share should have been cascaded away with its resource"
+        );
     }
 
     #[test]

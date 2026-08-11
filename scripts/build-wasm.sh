@@ -68,7 +68,12 @@ wasm-pack build crates/devsite-web \
 # wasm-pack emits stable filenames, so caching them aggressively would serve a stale
 # bundle after every deploy. Versioning the directory instead means the big artifact is
 # immutable and only the tiny manifest ever needs revalidating.
-version="$(shasum -a 256 "$staging/devsite_web_bg.wasm" | cut -c1-12)"
+# sha256sum on Linux, shasum on macOS. The Docker build runs this too.
+if command -v sha256sum >/dev/null; then
+  version="$(sha256sum "$staging/devsite_web_bg.wasm" | cut -c1-12)"
+else
+  version="$(shasum -a 256 "$staging/devsite_web_bg.wasm" | cut -c1-12)"
+fi
 target_dir="$repo_root/web/pkg/$version"
 
 rm -rf "$target_dir"

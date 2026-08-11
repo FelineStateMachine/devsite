@@ -1,0 +1,60 @@
+# The dev.site control plane on Fly.
+#
+# One machine, one volume, SQLite on it. That is a deliberate ceiling, not an
+# oversight: a Fly volume is attached to a single machine in a single region, and
+# nothing here wants more than one writer. The data is tiny — a few hundred bytes
+# per account — and since the heartbeat went away the write path is a handful of
+# rows per user per lifetime, so the constraint that matters is reads, which a
+# shared CPU serves comfortably.
+#
+# What is *not* here, and must not be: DEVSITE_SIGNING_KEY. It is a secret.
+
+app = "devsite"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # The one irreversible setting. Shoo derives client_id and every user's
+  # pairwise subject from this origin, so changing it after anyone has signed in
+  # orphans their account rather than moving it. It must match the hostname
+  # browsers actually load, certificate and all.
+  DEVSITE_PUBLIC_ORIGIN = "https://dev.site"
+  RUST_LOG = "devsite_server=info,tower_http=warn,warn"
+
+[[mounts]]
+  source = "devsite_data"
+  destination = "/data"
+  # Only the database lives here. The signing key comes from a secret, so losing
+  # this volume costs history, not identity — every daemon in the field keeps
+  # working against a restored or even an empty one.
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Never stopped. A suspended machine would serve the first visitor after an
+  # idle period a cold start, and the control plane is on the critical path of
+  # opening any service.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [http_service.concurrency]
+    type = "requests"
+    hard_limit = 250
+    soft_limit = 200
+
+# Cheap, unauthenticated, and touches no state: it reports the origin the process
+# actually booted with, which is the setting most worth noticing is wrong.
+[[http_service.checks]]
+  interval = "30s"
+  timeout = "5s"
+  grace_period = "10s"
+  method = "GET"
+  path = "/api/config"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
