@@ -195,6 +195,17 @@ function entry({ kind, name, state, href, onClick }) {
   return li;
 }
 
+/// Where a link goes, or just an arrow when its name already says so.
+///
+/// `www.` is ignored in the comparison: a link named `klot.ski` pointing at
+/// `www.klot.ski` is the same claim written twice.
+function linkHost(item) {
+  const host = new URL(item.url).host;
+  const same = host.replace(/^www\./, '').toLowerCase()
+    === item.name.replace(/^www\./, '').toLowerCase();
+  return same ? '↗' : `${host} ↗`;
+}
+
 function group(title, visibility, rows) {
   const section = document.createElement('section');
   section.className = 'group';
@@ -234,7 +245,11 @@ function renderProfile(profile) {
       buckets.public.push(entry({
         kind: 'link',
         name: esc(item.name),
-        state: `${new URL(item.url).host} ↗`,
+        // The host is there to say where a link goes when its name does not.
+        // When someone names a link after its domain — which is the honest thing
+        // to do for a site that has no other name — repeating it says nothing,
+        // so only the arrow remains.
+        state: linkHost(item),
         href: item.url,
       }));
     } else {
