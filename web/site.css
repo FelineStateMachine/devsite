@@ -117,10 +117,11 @@ body > main {
 .entries > li > button:is(:hover, :focus-visible) {
   color: var(--pico-primary-hover);
 }
-/* Links carry their host here. Services carry nothing: whether one is reachable
- * is not known until you ask it. */
+/* The right-hand column: where a link goes, or how a service is shared. Both are
+ * secondary to the name, so both take the muted colour rather than the body one. */
 .entries .state {
   white-space: nowrap;
+  color: var(--pico-muted-color);
 }
 
 /* -- the viewer ------------------------------------------------------------ */

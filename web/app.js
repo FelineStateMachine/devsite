@@ -123,9 +123,15 @@ async function completeSignIn() {
 ///
 /// The server has already checked every property against its whitelist and every
 /// value against a grammar, so this is only assembly: one rule, scoped to the
-/// profile, holding nothing but custom-property assignments. It is the last
-/// stylesheet in the document, so equal specificity is enough — no user rule
-/// ever has to out-rank Pico.
+/// profile, holding nothing but custom-property assignments.
+///
+/// The `:root` in the selector is load-bearing. Pico sets its palette on
+/// `:root:not([data-theme=dark])`, which is specificity (0,2,0) because `:not()`
+/// contributes its argument's weight. A bare `[data-profile="…"]` is (0,1,0) and
+/// loses to it outright — no matter how late in the document it appears. With
+/// `:root` in front we match that (0,2,0) and win on source order, being the last
+/// stylesheet in the page. This was wrong until it was tested in a browser, and
+/// the failure was silent: themes stored, served, and ignored.
 function applyTheme(handle, declarations = []) {
   const root = document.documentElement;
   // Belt and braces: handles are already restricted to this alphabet server-side.
@@ -146,7 +152,7 @@ function applyTheme(handle, declarations = []) {
     .map((d) => `  ${d.property}: ${d.value};`)
     .join('\n');
   $('profile-theme').textContent = body
-    ? `[data-profile="${scope}"] {\n${body}\n}\n`
+    ? `:root[data-profile="${scope}"] {\n${body}\n}\n`
     : '';
 }
 

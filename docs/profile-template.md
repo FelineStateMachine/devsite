@@ -15,9 +15,25 @@ can answer mechanically, in `crates/devsite-server/src/theme.rs`.
 | Site | `web/site.css` | The typeface, and the few layout rules Pico has no opinion about. No colours. |
 | Theme | `<style id="profile-theme">` | One rule, written at render time, holding only `--pico-*` assignments. |
 
-They load in that order, so a theme wins ties on document order alone. No user
-declaration ever has to out-specify anything, and none of them can, because a
-theme contains no selectors.
+They load in that order, and the theme is written as one rule:
+
+```css
+:root[data-profile="alice"] { --pico-primary: #bc6c25; … }
+```
+
+The `:root` is not decoration. Pico sets its palette on
+`:root:not([data-theme=dark])`, which is specificity **(0,2,0)** — `:not()`
+contributes the weight of its argument. A bare `[data-profile="alice"]` is
+(0,1,0) and loses to that outright, however late it appears in the document.
+Matching (0,2,0) and coming last is what makes a theme win.
+
+This was wrong in the first implementation, and it failed silently: themes
+validated, stored, served in the profile response, and applied to a page that
+went on looking exactly the same. Nothing short of reading a computed style in a
+real browser would have caught it, which is now how it is checked.
+
+A theme still writes no selectors of its own — that one is supplied here, and the
+user supplies only the declarations inside it.
 
 **Type is fixed.** Open Sans, vendored at `web/vendor/fonts/`, at 400 and 700 and
 no other weight. The file is a variable font, so it is declared twice at those two

@@ -5,8 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>dev.site</title>
 <!-- Pico first, this site's few additions second, and the profile's own theme
-     last. The theme block only ever assigns --pico-* variables, so landing last
-     is all it needs to win: no user rule ever has to out-specify anything. -->
+     last. Last is necessary but not sufficient: Pico's palette sits on
+     :root:not([data-theme=dark]), which is specificity (0,2,0), so the theme
+     block matches it with :root[data-profile="…"] and wins on order. See
+     applyTheme in app.js. -->
 <link rel="stylesheet" href="/vendor/pico.min.css">
 <link rel="stylesheet" href="/site.css">
 <style id="profile-theme"></style>
