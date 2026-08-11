@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dev.site</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="shell">
+  <header class="masthead">
+    <a class="wordmark" href="/">dev<span>.site</span></a>
+    <div class="session" id="session"></div>
+  </header>
+  <main id="main"></main>
+</div>
+
+<div class="viewer" id="viewer" hidden>
+  <div class="viewer-panel">
+    <div class="viewer-bar">
+      <div class="viewer-title" id="viewer-title"></div>
+      <button class="close" id="viewer-close" aria-label="Close">✕</button>
+    </div>
+    <p class="path" id="path"></p>
+    <div class="viewer-body">
+      <!-- allow-scripts WITHOUT allow-same-origin: the fetched page gets an opaque origin,
+           so it can run its own code but cannot reach dev.site's DOM, storage or cookies. -->
+      <iframe id="frame" sandbox="allow-scripts" title="Local service"></iframe>
+      <div class="viewer-status" id="viewer-status">connecting</div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

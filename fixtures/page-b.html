@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Agent</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; min-height: 100vh; display: grid; place-items: center;
+    background: #0b1117; color: #dceaf5;
+    font: 15px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .card { max-width: 34rem; padding: 2.5rem 3rem; border: 1px solid #1d3a52; background: #111c26; }
+  h1 {
+    margin: 0 0 .2rem; font-size: 1.6rem; font-weight: 500; letter-spacing: -.02em;
+    font-family: Georgia, serif;
+  }
+  .kicker { margin: 0 0 1.6rem; color: #9fb4c7; font-size: .78rem; font-style: italic; font-family: Georgia, serif; }
+  p { margin: 0 0 .6rem; color: #9fb4c7; font-size: .84rem; }
+  code { color: #7dd3fc; }
+  .clock { margin-top: 1.4rem; padding-top: 1rem; border-top: 1px solid #1d3a52; color: #7dd3fc; font-size: .78rem; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Agent</h1>
+    <p class="kicker">page b — shared with @frank</p>
+    <p>Served from <code>127.0.0.1:4102</code> on Dami's machine.</p>
+    <p>Frank reached this without Dami forwarding a port or deploying anything.</p>
+    <p class="clock" id="clock"></p>
+  </div>
+  <script>
+    const el = document.getElementById('clock');
+    const tick = () => el.textContent = 'rendered at ' + new Date().toLocaleTimeString();
+    tick(); setInterval(tick, 1000);
+  </script>
+</body>
+</html>

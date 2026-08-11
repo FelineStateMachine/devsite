@@ -1,0 +1,12 @@
+[package]
+name = "devsite-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+devsite-proto.workspace = true
+iroh = { version = "1", default-features = false, features = ["tls-ring"] }
+anyhow.workspace = true
+tracing.workspace = true
+thiserror = "2"

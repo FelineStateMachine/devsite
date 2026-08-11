@@ -1,0 +1,13 @@
+[package]
+name = "devsite-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+postcard.workspace = true
+data-encoding.workspace = true
+thiserror = "2"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "fast"] }
+getrandom = "0.3"

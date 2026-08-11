@@ -1,0 +1,4 @@
+# getrandom 0.3 needs an explicit backend on wasm32-unknown-unknown; without this
+# the wasm build fails at link time with an unresolved `__getrandom_v03_custom`.
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="wasm_js"']

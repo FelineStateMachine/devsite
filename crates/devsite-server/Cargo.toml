@@ -1,0 +1,28 @@
+[package]
+name = "devsite-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "devsite-server"
+path = "src/main.rs"
+
+[dependencies]
+devsite-proto.workspace = true
+anyhow.workspace = true
+axum = { version = "0.8", features = ["macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tower-http = { version = "0.6", features = ["fs", "trace", "set-header"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+serde.workspace = true
+serde_json = "1"
+jsonwebtoken = "9"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+data-encoding.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
