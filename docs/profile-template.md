@@ -40,26 +40,30 @@ changes here and changes to the whitelist belong in the same commit.
     <article id="profile">
       <hgroup>
         <h1>@alice</h1>
-        <p>2 services · 1 link</p>
+        <p>3 sites</p>
       </hgroup>
 
-      <!-- one section per visibility, omitted when empty -->
-      <section class="group" data-visibility="public">
-        <h2>Public</h2>
-        <ul class="entries">
-          <!-- a link goes somewhere else, so it is an anchor -->
-          <li class="entry" data-kind="link">
-            <a href="https://klot.ski" target="_blank" rel="noopener noreferrer">Klot Ski</a>
-            <small class="state">klot.ski ↗</small>
-          </li>
-          <!-- a service opens here, so it is a button. It carries no state:
-               nothing knows whether it is reachable until you ask it. -->
-          <li class="entry" data-kind="service">
-            <button class="outline">Hermes</button>
-          </li>
-        </ul>
+      <!-- one list, in the order things were published -->
+      <ul class="entries">
+        <!-- reached at its own address, so it is an anchor and takes you away -->
+        <li class="entry" data-kind="link" data-visibility="public">
+          <a href="https://klot.ski" target="_blank" rel="noopener noreferrer">klot.ski</a>
+          <small class="state">↗</small>
+        </li>
+        <!-- reached through its owner's daemon, so it is a button and opens
+             here. No reachability state: nothing knows whether it is running
+             until you ask it. -->
+        <li class="entry" data-kind="service" data-visibility="private">
+          <button class="outline">Hermes</button>
+          <small class="state">private</small>
+        </li>
+      </ul>
+
+      <!-- other people's sites, on your own profile only -->
+      <section class="group" data-visibility="shared-with-me">
+        <h2>Shared with me</h2>
+        <ul class="entries">…</ul>
       </section>
-      <!-- data-visibility is one of: public · private · shared · shared-with-me -->
     </article>
   </main>
 
@@ -67,9 +71,19 @@ changes here and changes to the whitelist belong in the same commit.
 </body>
 ```
 
-Entries carry `data-kind` so a theme can tell a link from a service, and nothing
-else. There is deliberately no reachability state to style: the page does not
-know whether a daemon is running, and says so by saying nothing.
+Everything on a profile is a site. `data-kind` says how you get to one — `link`
+is reached at its own address, `service` through its owner's daemon — and that is
+the only difference there is. The page does not sort itself into kinds, because
+which of the two a thing is says nothing about what it is for.
+
+`data-visibility` is on the row: `public`, `private` or `shared`. It is written
+out in `.state` only where it is not `public`, and a link is always `public` —
+dev.site can hide a URL but cannot stop anyone holding it from opening it, so
+concealment is the only thing "private" could mean there and the word is not
+offered.
+
+There is deliberately no reachability state to style: the page does not know
+whether a daemon is running, and says so by saying nothing.
 
 `--pico-ins-color` and `--pico-del-color` are still in the whitelist, and are
 what the viewer's success and failure messages are drawn with.

@@ -69,7 +69,7 @@ body > main {
   color: var(--pico-muted-color);
   font-size: 1rem;
 }
-.group + .group {
+.entries + .group {
   margin-top: var(--pico-block-spacing-vertical);
 }
 
@@ -95,6 +95,27 @@ body > main {
 /* Entry actions are buttons and links; neither should carry a block margin here. */
 .entries > li > :is(a, button, [role='button']) {
   margin-bottom: 0;
+}
+
+/* A service is a button because clicking it acts on this page rather than
+ * navigating — that is the correct element and it stays. It should not *look*
+ * like a different class of thing, though: the row already says how you get
+ * there with an arrow or its absence, and drawing one as a box and the other as
+ * text would re-sort the page into kinds the model no longer has. So the button
+ * is dressed as what it is: an entry in a list of sites. */
+.entries > li > button {
+  width: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--pico-primary);
+  text-decoration: underline;
+  text-underline-offset: var(--pico-text-underline-offset);
+  cursor: pointer;
+}
+.entries > li > button:is(:hover, :focus-visible) {
+  color: var(--pico-primary-hover);
 }
 /* Links carry their host here. Services carry nothing: whether one is reachable
  * is not known until you ask it. */

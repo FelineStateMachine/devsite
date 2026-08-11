@@ -172,26 +172,38 @@ function renderSession() {
 
 /// One row of a profile.
 ///
-/// Links are anchors and services are buttons, because a link goes somewhere and
-/// a service opens here.
+/// Everything on a profile is a site. The only difference between them is how you
+/// get there: a link is reached at its own address, so it is an anchor and takes
+/// you away; a service is reached through its owner's daemon, so it is a button
+/// and opens here. That is the whole of the distinction, and the row says it with
+/// an arrow rather than by sorting the page into kinds.
 ///
 /// A service carries no reachability state. Nothing on this page knows whether
 /// the far end is running — the control plane is not told, and the only thing
 /// that could answer is a connection attempt. So the row makes no claim, and
 /// clicking it finds out.
-function entry({ kind, name, state, href, onClick }) {
+function siteRow(item, { onClick, from } = {}) {
   const li = document.createElement('li');
   li.className = 'entry';
-  li.dataset.kind = kind;
+  li.dataset.kind = item.kind;
+  li.dataset.visibility = item.visibility;
 
-  if (href) {
+  const name = esc(item.name)
+    + (from ? ` <small>from @${esc(from)}</small>` : '');
+
+  if (item.kind === 'link') {
     li.innerHTML =
-      `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${name}</a>` +
-      `<small class="state">${esc(state)}</small>`;
-  } else {
-    li.innerHTML = `<button class="outline">${name}</button>`;
-    if (onClick) li.querySelector('button').addEventListener('click', onClick);
+      `<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${name}</a>` +
+      `<small class="state">${linkHost(item)}</small>`;
+    return li;
   }
+
+  // Visibility is worth saying only where it is not the default. On someone
+  // else's profile it also explains why you can see a thing at all.
+  const note = item.visibility === 'public' ? '' : esc(item.visibility);
+  li.innerHTML = `<button class="outline">${name}</button>`
+    + (note ? `<small class="state">${note}</small>` : '');
+  if (onClick) li.querySelector('button').addEventListener('click', onClick);
   return li;
 }
 
@@ -206,6 +218,9 @@ function linkHost(item) {
   return same ? '↗' : `${host} ↗`;
 }
 
+/// A titled list. Used only for "shared with me", which really is a different
+/// thing — other people's sites, on your page — rather than a subdivision of
+/// yours.
 function group(title, visibility, rows) {
   const section = document.createElement('section');
   section.className = 'group';
@@ -226,61 +241,32 @@ function renderProfile(profile) {
   const article = document.createElement('article');
   article.id = 'profile';
 
-  const counts = [
-    profile.entries.filter((e) => e.kind === 'service').length,
-    profile.entries.filter((e) => e.kind === 'link').length,
-  ];
-  const summary = [
-    counts[0] === 1 ? '1 service' : `${counts[0]} services`,
-    counts[1] === 1 ? '1 link' : `${counts[1]} links`,
-  ].join(' · ');
-
+  const total = profile.entries.length;
   const heading = document.createElement('hgroup');
-  heading.innerHTML = `<h1>@${esc(profile.handle)}</h1><p>${summary}</p>`;
+  heading.innerHTML = `<h1>@${esc(profile.handle)}</h1>`
+    + `<p>${total === 1 ? '1 site' : `${total} sites`}</p>`;
   article.append(heading);
 
-  const buckets = { public: [], private: [], shared: [] };
-  for (const item of profile.entries) {
-    if (item.kind === 'link') {
-      buckets.public.push(entry({
-        kind: 'link',
-        name: esc(item.name),
-        // The host is there to say where a link goes when its name does not.
-        // When someone names a link after its domain — which is the honest thing
-        // to do for a site that has no other name — repeating it says nothing,
-        // so only the arrow remains.
-        state: linkHost(item),
-        href: item.url,
-      }));
-    } else {
-      buckets[item.visibility].push(entry({
-        kind: 'service',
-        name: esc(item.name),
-        onClick: () => openService(item),
-      }));
+  // One list, in the order things were published. No sections by kind or by
+  // visibility: a profile is a list of sites, and sorting it into "links" and
+  // "services" would be publishing an implementation detail as a heading.
+  if (total) {
+    const list = document.createElement('ul');
+    list.className = 'entries';
+    for (const item of profile.entries) {
+      list.append(siteRow(item, { onClick: () => openService(item) }));
     }
-  }
-
-  const titles = { public: 'Public', private: 'Private', shared: 'Shared' };
-  for (const visibility of ['public', 'private', 'shared']) {
-    if (buckets[visibility].length) {
-      article.append(group(titles[visibility], visibility, buckets[visibility]));
-    }
-  }
-
-  if (profile.shared_with_me.length) {
-    const rows = profile.shared_with_me.map((item) => entry({
-      kind: 'service',
-      name: `${esc(item.name)} <small>from @${esc(item.owner_handle)}</small>`,
-      onClick: () => openService(item),
-    }));
-    article.append(group('Shared with me', 'shared-with-me', rows));
-  }
-
-  if (!article.querySelector('.entry')) {
+    article.append(list);
+  } else {
     const empty = document.createElement('p');
     empty.innerHTML = '<small>Nothing published yet.</small>';
     article.append(empty);
+  }
+
+  if (profile.shared_with_me.length) {
+    const rows = profile.shared_with_me.map((item) =>
+      siteRow(item, { onClick: () => openService(item), from: item.owner_handle }));
+    article.append(group('Shared with me', 'shared-with-me', rows));
   }
 
   main.append(article);
