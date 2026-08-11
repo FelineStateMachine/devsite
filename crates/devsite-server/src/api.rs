@@ -493,7 +493,7 @@ async fn profile(
     }
 
     // "Shared with me" belongs on your own profile, not on everyone else's. Listing it on
-    // @dami's page would also show Frank the same Agent entry twice.
+    // @alice's page would also show Bob the same Agent entry twice.
     let mut shared_with_me = Vec::new();
     if let Some(viewer_id) = viewer.filter(|v| *v == owner.id) {
         for resource in db

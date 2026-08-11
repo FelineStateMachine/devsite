@@ -482,59 +482,59 @@ mod tests {
 
     fn seeded() -> (Db, Account, Account) {
         let db = Db::open_in_memory().unwrap();
-        let dami = db.upsert_account("ps_dami", 0).unwrap();
-        let frank = db.upsert_account("ps_frank", 0).unwrap();
-        db.set_handle(dami.id, "dami").unwrap();
-        db.set_handle(frank.id, "frank").unwrap();
-        (db, dami, frank)
+        let alice = db.upsert_account("ps_alice", 0).unwrap();
+        let bob = db.upsert_account("ps_bob", 0).unwrap();
+        db.set_handle(alice.id, "alice").unwrap();
+        db.set_handle(bob.id, "bob").unwrap();
+        (db, alice, bob)
     }
 
     #[test]
     fn signing_in_twice_reuses_the_same_account() {
         let db = Db::open_in_memory().unwrap();
-        let first = db.upsert_account("ps_dami", 0).unwrap();
-        let second = db.upsert_account("ps_dami", 100).unwrap();
+        let first = db.upsert_account("ps_alice", 0).unwrap();
+        let second = db.upsert_account("ps_alice", 100).unwrap();
         assert_eq!(first.id, second.id, "a returning user must not get a new account");
     }
 
     #[test]
     fn shares_are_visible_to_the_named_viewer_only() {
-        let (db, dami, frank) = seeded();
+        let (db, alice, bob) = seeded();
         let agent = db
-            .create_resource(dami.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
             .unwrap();
         let hermes = db
-            .create_resource(dami.id, "Hermes", ResourceKind::Service, Visibility::Private, None, 0)
+            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Private, None, 0)
             .unwrap();
-        db.share_with(agent, frank.id).unwrap();
+        db.share_with(agent, bob.id).unwrap();
 
-        let franks = db.resources_shared_with(frank.id).unwrap();
-        assert_eq!(franks.len(), 1);
-        assert_eq!(franks[0].id, agent);
+        let bobs = db.resources_shared_with(bob.id).unwrap();
+        assert_eq!(bobs.len(), 1);
+        assert_eq!(bobs[0].id, agent);
         assert!(
-            !franks.iter().any(|r| r.id == hermes),
+            !bobs.iter().any(|r| r.id == hermes),
             "a private resource must never appear in someone else's shared list"
         );
     }
 
     #[test]
     fn owners_do_not_see_their_own_resources_as_shared_with_them() {
-        let (db, dami, frank) = seeded();
+        let (db, alice, bob) = seeded();
         let agent = db
-            .create_resource(dami.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
             .unwrap();
-        db.share_with(agent, frank.id).unwrap();
-        db.share_with(agent, dami.id).unwrap();
+        db.share_with(agent, bob.id).unwrap();
+        db.share_with(agent, alice.id).unwrap();
         assert!(
-            db.resources_shared_with(dami.id).unwrap().is_empty(),
+            db.resources_shared_with(alice.id).unwrap().is_empty(),
             "own resources belong in the profile list, not `shared with me`"
         );
     }
 
     #[test]
     fn expired_sessions_do_not_resolve() {
-        let (db, dami, _) = seeded();
-        db.create_session("hash", dami.id, 100).unwrap();
+        let (db, alice, _) = seeded();
+        db.create_session("hash", alice.id, 100).unwrap();
         assert!(db.session_account("hash", 50).unwrap().is_some());
         assert!(db.session_account("hash", 100).unwrap().is_none());
         assert!(db.session_account("hash", 500).unwrap().is_none());
@@ -542,17 +542,17 @@ mod tests {
 
     #[test]
     fn registering_a_daemon_is_idempotent_and_survives_re_registration() {
-        let (db, dami, _) = seeded();
-        assert!(db.daemon_endpoint(dami.id).unwrap().is_none());
+        let (db, alice, _) = seeded();
+        assert!(db.daemon_endpoint(alice.id).unwrap().is_none());
 
-        db.register_daemon(dami.id, "abc").unwrap();
-        db.register_daemon(dami.id, "abc").unwrap();
-        assert_eq!(db.daemon_endpoint(dami.id).unwrap().as_deref(), Some("abc"));
+        db.register_daemon(alice.id, "abc").unwrap();
+        db.register_daemon(alice.id, "abc").unwrap();
+        assert_eq!(db.daemon_endpoint(alice.id).unwrap().as_deref(), Some("abc"));
 
         // A new identity file means a new endpoint id, and the account should
         // follow it rather than keeping an id nothing answers on.
-        db.register_daemon(dami.id, "def").unwrap();
-        assert_eq!(db.daemon_endpoint(dami.id).unwrap().as_deref(), Some("def"));
+        db.register_daemon(alice.id, "def").unwrap();
+        assert_eq!(db.daemon_endpoint(alice.id).unwrap().as_deref(), Some("def"));
     }
 
     #[test]
@@ -580,7 +580,7 @@ mod tests {
         legacy
             .execute(
                 "INSERT INTO accounts (id, external_sub, handle, created_at)
-                 VALUES (?1, 'ps_x', 'dami', 0)",
+                 VALUES (?1, 'ps_x', 'alice', 0)",
                 params![legacy_account],
             )
             .unwrap();
@@ -594,11 +594,11 @@ mod tests {
         drop(legacy);
 
         let db = Db::open(file.to_str().unwrap()).unwrap();
-        let dami = db.account_by_handle("dami").unwrap().unwrap();
+        let alice = db.account_by_handle("alice").unwrap().unwrap();
 
         // The identity survives the columns around it being dropped: an existing
         // daemon keeps working without re-registering.
-        assert_eq!(db.daemon_endpoint(dami.id).unwrap().as_deref(), Some("abc"));
+        assert_eq!(db.daemon_endpoint(alice.id).unwrap().as_deref(), Some("abc"));
 
         std::fs::remove_file(&file).ok();
     }
@@ -608,28 +608,28 @@ mod tests {
         // `devsite expose --name Hermes` run twice must not leave two Hermes entries on
         // the profile, and the id must survive so already-issued capabilities still name
         // the same thing.
-        let (db, dami, _) = seeded();
+        let (db, alice, _) = seeded();
         let first = db
-            .create_resource(dami.id, "Hermes", ResourceKind::Service, Visibility::Private, None, 0)
+            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Private, None, 0)
             .unwrap();
         let second = db
-            .create_resource(dami.id, "Hermes", ResourceKind::Service, Visibility::Shared, None, 10)
+            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Shared, None, 10)
             .unwrap();
 
         assert_eq!(first, second, "re-exposing must reuse the resource id");
-        let owned = db.resources_owned_by(dami.id).unwrap();
+        let owned = db.resources_owned_by(alice.id).unwrap();
         assert_eq!(owned.len(), 1, "expected exactly one Hermes, got {owned:?}");
         assert_eq!(owned[0].visibility, Visibility::Shared, "visibility should update");
     }
 
     #[test]
     fn different_people_may_use_the_same_service_name() {
-        let (db, dami, frank) = seeded();
+        let (db, alice, bob) = seeded();
         let a = db
-            .create_resource(dami.id, "Agent", ResourceKind::Service, Visibility::Private, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Private, None, 0)
             .unwrap();
         let b = db
-            .create_resource(frank.id, "Agent", ResourceKind::Service, Visibility::Private, None, 0)
+            .create_resource(bob.id, "Agent", ResourceKind::Service, Visibility::Private, None, 0)
             .unwrap();
         assert_ne!(a, b, "names are scoped to their owner");
     }
@@ -639,40 +639,40 @@ mod tests {
         // Not a hypothetical: the pragma lived in SCHEMA, which migrations skip
         // for an existing database, so every process after the first ran without
         // it. A share pointing at a deleted resource would have been left behind.
-        let (db, dami, frank) = seeded();
+        let (db, alice, bob) = seeded();
         let agent = db
-            .create_resource(dami.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
             .unwrap();
-        db.share_with(agent, frank.id).unwrap();
+        db.share_with(agent, bob.id).unwrap();
 
         db.conn
             .execute("DELETE FROM resources WHERE id = ?1", params![agent.to_string()])
             .unwrap();
 
         assert!(
-            db.resources_shared_with(frank.id).unwrap().is_empty(),
+            db.resources_shared_with(bob.id).unwrap().is_empty(),
             "the share should have been cascaded away with its resource"
         );
     }
 
     #[test]
     fn a_theme_round_trips_and_can_be_cleared() {
-        let (db, dami, _) = seeded();
-        assert!(db.custom_css(dami.id).unwrap().is_none());
+        let (db, alice, _) = seeded();
+        assert!(db.custom_css(alice.id).unwrap().is_none());
 
-        db.set_custom_css(dami.id, Some("--pico-primary: #7b3fe4;\n")).unwrap();
+        db.set_custom_css(alice.id, Some("--pico-primary: #7b3fe4;\n")).unwrap();
         assert_eq!(
-            db.custom_css(dami.id).unwrap().as_deref(),
+            db.custom_css(alice.id).unwrap().as_deref(),
             Some("--pico-primary: #7b3fe4;\n")
         );
 
-        db.set_custom_css(dami.id, None).unwrap();
-        assert!(db.custom_css(dami.id).unwrap().is_none());
+        db.set_custom_css(alice.id, None).unwrap();
+        assert!(db.custom_css(alice.id).unwrap().is_none());
     }
 
     #[test]
     fn handles_are_matched_case_insensitively() {
-        let (db, dami, _) = seeded();
-        assert_eq!(db.account_by_handle("DaMi").unwrap().unwrap().id, dami.id);
+        let (db, alice, _) = seeded();
+        assert_eq!(db.account_by_handle("AlIcE").unwrap().unwrap().id, alice.id);
     }
 }

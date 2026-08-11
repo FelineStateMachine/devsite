@@ -39,7 +39,7 @@ changes here and changes to the whitelist belong in the same commit.
   <main class="container" id="main">
     <article id="profile">
       <hgroup>
-        <h1>@dami</h1>
+        <h1>@alice</h1>
         <p>2 services · 1 link</p>
       </hgroup>
 

@@ -208,8 +208,8 @@ mod tests {
 
     #[test]
     fn accepts_reasonable_handles() {
-        assert_eq!(validate_handle("@Dami").unwrap(), "dami");
-        assert_eq!(validate_handle("frank_2").unwrap(), "frank_2");
+        assert_eq!(validate_handle("@Alice").unwrap(), "alice");
+        assert_eq!(validate_handle("bob_2").unwrap(), "bob_2");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Immutable, opaque identifiers.
 //!
-//! Handles such as `@dami` are presentation names only. Every authorization decision in
+//! Handles such as `@alice` are presentation names only. Every authorization decision in
 //! the system is made against these IDs, which never change and are never reassigned.
 
 use std::fmt;

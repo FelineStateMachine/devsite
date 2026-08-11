@@ -47,7 +47,7 @@ enum Command {
         public: bool,
         #[arg(long, conflicts_with_all = ["public", "share"])]
         private: bool,
-        /// Share with a specific user, e.g. --share @frank. Repeatable.
+        /// Share with a specific user, e.g. --share @bob. Repeatable.
         #[arg(long, value_name = "@handle")]
         share: Vec<String>,
     },
@@ -63,7 +63,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum ProfileCommand {
-    /// Claim a handle, e.g. `devsite profile create @dami`.
+    /// Claim a handle, e.g. `devsite profile create @alice`.
     Create { handle: String },
 }
 

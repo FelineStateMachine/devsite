@@ -448,8 +448,8 @@ function renderClaimHandle() {
       </hgroup>
       <form id="claim-form">
         <fieldset role="group">
-          <input id="handle" name="handle" placeholder="dami" autocomplete="off" spellcheck="false"
-                 aria-label="Handle" required>
+          <input id="handle" name="handle" placeholder="yourhandle" autocomplete="off"
+                 spellcheck="false" aria-label="Handle" required>
           <button type="submit">Claim</button>
         </fieldset>
         <small id="claim-note"></small>

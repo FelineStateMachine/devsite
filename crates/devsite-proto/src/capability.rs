@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn rejects_use_from_a_different_browser_key() {
-        // Frank hands his capability to someone else, or it leaks from the network. The
+        // Bob hands his capability to someone else, or it leaks from the network. The
         // thief connects with their own endpoint key, and the binding fails.
         let key = signing_key(9);
         let cap = SignedCapability::sign(&claims([7; 32], [8; 32]), &key).unwrap();

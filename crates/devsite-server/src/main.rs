@@ -190,7 +190,7 @@ fn issue_session(config: &Config, handle: &str) -> Result<()> {
 
     // Attach to the existing account when the handle is taken. Creating a second one would
     // collide on the unique handle, and the useful operator action here is "give me a
-    // session for @dami" — including when @dami signed in through Shoo.
+    // session for @alice" — including when @alice signed in through Shoo.
     let account = match db.account_by_handle(&handle)? {
         Some(existing) => existing,
         None => {

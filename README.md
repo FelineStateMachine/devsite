@@ -60,17 +60,17 @@ cargo run -p devsite-fixture -- 4102 fixtures/page-b.html   # Agent
 Sign in at <http://127.0.0.1:4000> (Google, via Shoo), or mint a session from the shell:
 
 ```bash
-cargo run -p devsite-server -- issue-session dami
+cargo run -p devsite-server -- issue-session alice
 ```
 
 Then configure the machine:
 
 ```bash
 devsite login --token <token>
-devsite profile create @dami
+devsite profile create @alice
 devsite link add --name "Klot Ski" --url https://klot.ski --public
 devsite expose http://127.0.0.1:4101 --name "Hermes" --private
-devsite expose http://127.0.0.1:4102 --name "Agent" --share @frank
+devsite expose http://127.0.0.1:4102 --name "Agent" --share @bob
 devsite theme set my-theme.css
 devsite daemon run
 ```

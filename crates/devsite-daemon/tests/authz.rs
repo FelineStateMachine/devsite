@@ -233,7 +233,7 @@ async fn valid_capability_fetches_the_page(h: &Harness) {
 
 async fn each_resource_maps_to_its_own_service(h: &Harness) {
     // Proves the daemon routes by resource id rather than serving one default origin —
-    // otherwise "Frank can reach Agent" would quietly also mean "Frank can reach Hermes".
+    // otherwise "Bob can reach Agent" would quietly also mean "Bob can reach Hermes".
     let page = h.fetch(h.valid(h.agent)).await.unwrap();
     assert!(page.contains(AGENT_BODY), "got: {page}");
     assert!(!page.contains(HERMES_BODY));
