@@ -122,9 +122,5 @@ served `immutable`. The manifest naming the current hash, the HTML, and every `/
 response are `no-cache` or `no-store`. Redeploying therefore invalidates nothing and never
 serves a stale bundle.
 
-## The previous setup
-
-`setup-tunnel.sh`, `run.sh` and `env` publish the control plane from a laptop through
-Cloudflare Tunnel. They still work, and are what `https://dev.site` pointed at before Fly.
-Delete them once the cutover has settled — running both against the same hostname is a way
-to be confused about which one is live.
+Cloudflare still holds the `dev.site` zone, but only as DNS — the `A` and `AAAA` records
+point straight at Fly, unproxied.

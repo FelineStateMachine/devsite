@@ -13,8 +13,6 @@
 *.db-journal
 /.e2e
 
-# Generated: contains the tunnel id and a path to account credentials.
-deploy/cloudflared.yml
 
 # Tooling scratch
 .playwright-cli/
