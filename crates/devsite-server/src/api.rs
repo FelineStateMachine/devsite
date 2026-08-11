@@ -209,6 +209,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/me", get(me))
         .route("/api/profile", post(claim_handle))
         .route("/api/resources", post(create_resource).get(list_resources))
+        .route("/api/resources/{id}", axum::routing::delete(delete_resource))
         .route("/api/daemon", axum::routing::put(register_daemon))
         .route("/api/theme", get(read_theme).put(write_theme))
         .route("/api/theme/properties", get(theme_properties))
@@ -345,7 +346,7 @@ async fn create_resource(
         _ => {}
     }
 
-    let db = state.db.lock().unwrap();
+    let mut db = state.db.lock().unwrap();
 
     // Resolve every share target *before* creating anything. Creating first and failing
     // partway leaves an orphaned resource on the profile that the owner's daemon knows
@@ -365,13 +366,36 @@ async fn create_resource(
         .create_resource(owner, &body.name, kind, visibility, body.url.as_deref(), now_secs())
         .map_err(ApiError::internal)?;
 
-    for viewer in viewers {
-        db.share_with(resource, viewer).map_err(ApiError::internal)?;
-    }
+    // The share list this request names is the whole share list afterwards.
+    // Re-running `expose --share @carol` means the resource is Carol's, not
+    // Carol's as well as whoever was named the last time it ran.
+    db.set_shares(resource, &viewers).map_err(ApiError::internal)?;
 
     Ok(Json(CreateResourceResponse {
         resource_id: resource.to_string(),
     }))
+}
+
+/// Remove a resource. Only its owner can, and only their own.
+///
+/// A resource that is not yours is 404 rather than 403, as everywhere else here:
+/// a 403 would confirm the id exists.
+async fn delete_resource(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<impl IntoResponse> {
+    let owner = require_account(&state, &headers)?;
+    let resource = ResourceId::from_str(&id).map_err(|_| ApiError::not_found())?;
+
+    let db = state.db.lock().unwrap();
+    if !db
+        .delete_resource(owner, resource)
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::not_found());
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn list_resources(

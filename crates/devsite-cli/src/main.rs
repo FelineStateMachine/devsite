@@ -51,6 +51,11 @@ enum Command {
         #[arg(long, value_name = "@handle")]
         share: Vec<String>,
     },
+    /// Stop exposing a local service and take it off your profile.
+    Unexpose {
+        /// The name it was exposed under.
+        name: String,
+    },
     /// Profile appearance.
     #[command(subcommand)]
     Theme(ThemeCommand),
@@ -77,6 +82,9 @@ enum LinkCommand {
         #[arg(long)]
         public: bool,
     },
+    /// Take a link off your profile. Re-running `add` with the same name edits
+    /// it in place; this is for when it should not be there at all.
+    Remove { name: String },
 }
 
 #[derive(Subcommand)]
@@ -130,6 +138,20 @@ struct CreateResourceResponse {
     resource_id: String,
 }
 
+#[derive(Deserialize)]
+struct ResourceListing {
+    resources: Vec<Resource>,
+}
+
+#[derive(Deserialize)]
+struct Resource {
+    resource_id: String,
+    name: String,
+    kind: String,
+    /// Set for links only; a service's origin never leaves the machine serving it.
+    url: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -151,6 +173,10 @@ async fn main() -> Result<()> {
         Command::Link(LinkCommand::Add { name, url, public }) => {
             add_link(&paths, &cli.server, &name, &url, public).await
         }
+        Command::Link(LinkCommand::Remove { name }) => {
+            remove_link(&paths, &cli.server, &name).await
+        }
+        Command::Unexpose { name } => unexpose(&paths, &cli.server, &name).await,
         Command::Expose {
             origin,
             name,
@@ -245,6 +271,59 @@ async fn add_link(paths: &Paths, server: &str, name: &str, url: &str, public: bo
         )
         .await?;
     println!("added link {name} → {url}");
+    Ok(())
+}
+
+/// Delete one of your resources, found by the name you gave it.
+///
+/// Names are resolved here rather than server-side because the server keys
+/// everything by id, and an endpoint that deleted by name would have to invent a
+/// rule for a link and a service sharing one. Listing first also means the "no
+/// such thing" case is answered with the names that do exist.
+async fn remove_resource(paths: &Paths, server: &str, name: &str, kind: &str) -> Result<Resource> {
+    let config = load_authenticated(paths)?;
+    let api = ControlPlane::new(server, config.session_token.clone());
+
+    let listing: ResourceListing = api.get("/api/resources").await?;
+    let found = listing
+        .resources
+        .into_iter()
+        .find(|r| r.name == name && r.kind == kind);
+
+    let Some(resource) = found else {
+        bail!("you have no {kind} called `{name}`");
+    };
+    api.delete(&format!("/api/resources/{}", resource.resource_id))
+        .await?;
+    Ok(resource)
+}
+
+async fn remove_link(paths: &Paths, server: &str, name: &str) -> Result<()> {
+    let removed = remove_resource(paths, server, name, "link").await?;
+    println!("removed link {name} → {}", removed.url.unwrap_or_default());
+    Ok(())
+}
+
+/// Stop serving a local service and take it off the profile.
+///
+/// Both halves matter and in this order: the control plane forgets it, then this
+/// machine does. A daemon that kept serving a resource the control plane has
+/// deleted is harmless — no capability can be issued for it any more — but a
+/// config that still lists it would re-register the name on the next `expose`.
+async fn unexpose(paths: &Paths, server: &str, name: &str) -> Result<()> {
+    remove_resource(paths, server, name, "service").await?;
+
+    let mut config = paths.load_config()?;
+    let before = config.resources.len();
+    config.resources.retain(|r| r.name != name);
+    paths.save_config(&config)?;
+
+    println!("unexposed {name}");
+    if config.resources.len() == before {
+        println!("  (this machine was not serving it; removed from your profile)");
+    } else {
+        println!("  restart `devsite daemon run` to stop serving it");
+    }
     Ok(())
 }
 

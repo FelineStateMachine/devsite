@@ -376,12 +376,43 @@ impl Db {
         rows.into_iter().collect()
     }
 
-    pub fn share_with(&self, resource: ResourceId, viewer: AccountId) -> Result<()> {
-        self.conn.execute(
-            "INSERT OR IGNORE INTO shares (resource_id, viewer_id) VALUES (?1, ?2)",
-            params![resource.to_string(), viewer.to_string()],
+    /// Set exactly who a resource is shared with, replacing whoever was there.
+    ///
+    /// Replacing rather than adding is the whole point. `devsite expose --share
+    /// @carol` reads as "this is Carol's now", and an accumulating list would
+    /// leave everyone previously named still holding access — a permission that
+    /// could be granted and never taken back. Sharing with nobody revokes.
+    pub fn set_shares(&mut self, resource: ResourceId, viewers: &[AccountId]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "DELETE FROM shares WHERE resource_id = ?1",
+            params![resource.to_string()],
         )?;
+        for viewer in viewers {
+            tx.execute(
+                "INSERT OR IGNORE INTO shares (resource_id, viewer_id) VALUES (?1, ?2)",
+                params![resource.to_string(), viewer.to_string()],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Delete a resource, and with it every share of it.
+    ///
+    /// Scoped by owner in the statement itself rather than checked beforehand,
+    /// so a request naming someone else's resource deletes nothing rather than
+    /// relying on a caller to have asked the right question first. The shares go
+    /// by `ON DELETE CASCADE`, which only works because `foreign_keys` is now set
+    /// on every connection.
+    ///
+    /// Returns whether anything was deleted.
+    pub fn delete_resource(&self, owner: AccountId, resource: ResourceId) -> Result<bool> {
+        let rows = self.conn.execute(
+            "DELETE FROM resources WHERE id = ?1 AND owner_id = ?2",
+            params![resource.to_string(), owner.to_string()],
+        )?;
+        Ok(rows > 0)
     }
 
     pub fn shared_with(&self, resource: ResourceId) -> Result<Vec<AccountId>> {
@@ -498,15 +529,76 @@ mod tests {
     }
 
     #[test]
+    fn re_sharing_replaces_the_list_rather_than_adding_to_it() {
+        // The bug this exists to prevent: `expose --share @carol` reading as
+        // "and Carol too". A share that can be granted and never revoked is not
+        // a share, it is a one-way door.
+        let (mut db, alice, bob) = seeded();
+        let carol = db.upsert_account("ps_carol", 0).unwrap();
+        db.set_handle(carol.id, "carol").unwrap();
+
+        let agent = db
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .unwrap();
+
+        db.set_shares(agent, &[bob.id]).unwrap();
+        assert_eq!(db.shared_with(agent).unwrap(), vec![bob.id]);
+
+        db.set_shares(agent, &[carol.id]).unwrap();
+        assert_eq!(
+            db.shared_with(agent).unwrap(),
+            vec![carol.id],
+            "Bob should have lost access, not kept it alongside Carol"
+        );
+
+        // Sharing with nobody is how you take it back entirely.
+        db.set_shares(agent, &[]).unwrap();
+        assert!(db.shared_with(agent).unwrap().is_empty());
+        assert!(db.resources_shared_with(carol.id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_a_resource_takes_its_shares_with_it() {
+        let (mut db, alice, bob) = seeded();
+        let agent = db
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .unwrap();
+        db.set_shares(agent, &[bob.id]).unwrap();
+
+        assert!(db.delete_resource(alice.id, agent).unwrap());
+        assert!(db.resource(agent).unwrap().is_none());
+        assert!(
+            db.shared_with(agent).unwrap().is_empty(),
+            "the share should have cascaded away with the resource"
+        );
+        assert!(db.resources_shared_with(bob.id).unwrap().is_empty());
+        // Deleting it twice is not an error, it is just nothing.
+        assert!(!db.delete_resource(alice.id, agent).unwrap());
+    }
+
+    #[test]
+    fn you_can_only_delete_your_own_resources() {
+        let (mut db, alice, bob) = seeded();
+        let hermes = db
+            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Shared, None, 0)
+            .unwrap();
+        // Shared with Bob, so he can see it — which must not extend to removing it.
+        db.set_shares(hermes, &[bob.id]).unwrap();
+
+        assert!(!db.delete_resource(bob.id, hermes).unwrap());
+        assert!(db.resource(hermes).unwrap().is_some());
+    }
+
+    #[test]
     fn shares_are_visible_to_the_named_viewer_only() {
-        let (db, alice, bob) = seeded();
+        let (mut db, alice, bob) = seeded();
         let agent = db
             .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
             .unwrap();
         let hermes = db
             .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Private, None, 0)
             .unwrap();
-        db.share_with(agent, bob.id).unwrap();
+        db.set_shares(agent, &[bob.id]).unwrap();
 
         let bobs = db.resources_shared_with(bob.id).unwrap();
         assert_eq!(bobs.len(), 1);
@@ -519,12 +611,11 @@ mod tests {
 
     #[test]
     fn owners_do_not_see_their_own_resources_as_shared_with_them() {
-        let (db, alice, bob) = seeded();
+        let (mut db, alice, bob) = seeded();
         let agent = db
             .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
             .unwrap();
-        db.share_with(agent, bob.id).unwrap();
-        db.share_with(agent, alice.id).unwrap();
+        db.set_shares(agent, &[bob.id, alice.id]).unwrap();
         assert!(
             db.resources_shared_with(alice.id).unwrap().is_empty(),
             "own resources belong in the profile list, not `shared with me`"
@@ -639,11 +730,11 @@ mod tests {
         // Not a hypothetical: the pragma lived in SCHEMA, which migrations skip
         // for an existing database, so every process after the first ran without
         // it. A share pointing at a deleted resource would have been left behind.
-        let (db, alice, bob) = seeded();
+        let (mut db, alice, bob) = seeded();
         let agent = db
             .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
             .unwrap();
-        db.share_with(agent, bob.id).unwrap();
+        db.set_shares(agent, &[bob.id]).unwrap();
 
         db.conn
             .execute("DELETE FROM resources WHERE id = ?1", params![agent.to_string()])

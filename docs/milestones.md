@@ -180,7 +180,38 @@ than being greyed out in advance.
 Verified in a browser against a real daemon: reached with only an endpoint id and no relay
 url anywhere in the response, then killed the daemon and got the timeout and its message.
 
+## M9 — Taking things back ✅
+
+Everything could be created and nothing could be removed. `link add` and `expose` upsert on
+`(owner, name, kind)`, so re-running either edited an entry in place — but a name typed
+wrong was permanent, and there was no delete anywhere: no route, no command.
+
+The worse half was sharing. `create_resource` never touched the `shares` table and
+`share_with` was `INSERT OR IGNORE`, so the list only ever grew:
+
+```
+expose … --name Agent --share @bob      shares {bob}
+expose … --name Agent --share @carol    shares {bob, carol}
+```
+
+The second command reads as "this is Carol's now". Bob kept access, `can_view` honoured the
+stale row, and there was no way to remove it — a permission that could be granted and never
+taken back. `set_shares` now replaces the list in a transaction, so naming nobody revokes.
+
+`DELETE /api/resources/{id}` scopes the delete by owner in the statement itself rather than
+checking first, so a request naming someone else's resource deletes nothing rather than
+depending on a caller having asked the right question. Shares go with it by `ON DELETE
+CASCADE` — which only started working when `foreign_keys` moved out of `SCHEMA` and into
+every connection, in M8's Fly work. That pragma had been a no-op in every process that did
+not create the database.
+
+`devsite link remove <name>` and `devsite unexpose <name>` resolve the name to an id
+client-side and delete by id. `unexpose` also drops the service from the local daemon
+config, because a config that still lists it would re-register the name on the next
+`expose`.
+
 ## Next
 
 Surfaces that still have none: managing exposures from the website, and seeing who a
-service is shared with.
+service is shared with. Renaming, too — remove and re-add is the only way, and for a
+service that means a new resource id.

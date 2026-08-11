@@ -56,6 +56,19 @@ impl ControlPlane {
         decode(response, path).await
     }
 
+    /// DELETE, where a 2xx with no body is the expected success.
+    pub async fn delete(&self, path: &str) -> Result<()> {
+        let response = self
+            .request(reqwest::Method::DELETE, path)
+            .send()
+            .await
+            .with_context(|| format!("DELETE {path}"))?;
+        if !response.status().is_success() {
+            bail!("{path} failed: {}", error_text(response).await);
+        }
+        Ok(())
+    }
+
     /// PUT where a 2xx with no body is the expected success.
     pub async fn put_empty<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
         let response = self
