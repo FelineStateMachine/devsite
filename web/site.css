@@ -69,8 +69,27 @@ body > main {
   color: var(--pico-muted-color);
   font-size: 1rem;
 }
-.entries + .group {
+.entries + .group,
+.entries + .folder,
+.folder + .folder,
+.folder + .group {
   margin-top: var(--pico-block-spacing-vertical);
+}
+
+/* A folder's summary is a label on a fold, not a heading competing with the
+ * profile name. Pico already draws the chevron and handles the open state. */
+.folder > summary {
+  color: var(--pico-muted-color);
+  font-weight: 700;
+}
+.folder > summary > small {
+  color: var(--pico-muted-color);
+  font-weight: 400;
+}
+/* Pico gives an open <details> a bottom margin on its content; the list already
+ * carries its own rules, so it only needs to sit clear of the summary. */
+.folder > .entries {
+  margin-top: calc(var(--pico-spacing) * 0.5);
 }
 
 /* A list of things on a profile: name on the left, state on the right.

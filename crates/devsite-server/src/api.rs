@@ -37,6 +37,7 @@ pub fn now_secs() -> u64 {
 
 // -- errors -------------------------------------------------------------------
 
+#[derive(Debug)]
 pub struct ApiError(StatusCode, String);
 
 impl ApiError {
@@ -136,6 +137,11 @@ pub struct CreateResourceRequest {
     /// Handles to share with. Only meaningful when `visibility` is `shared`.
     #[serde(default)]
     pub share_with: Vec<String>,
+    /// The folder to file it under. Absent means loose on the profile — and
+    /// absent on a re-add means "take it out of the folder it was in", because a
+    /// command names the whole state of the thing it names.
+    #[serde(default)]
+    pub folder: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -155,6 +161,7 @@ pub struct ProfileEntry {
     pub kind: &'static str,
     pub visibility: &'static str,
     pub url: Option<String>,
+    pub folder: Option<String>,
     /// Present only on "shared with me" entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_handle: Option<String>,
@@ -346,6 +353,8 @@ async fn create_resource(
         _ => {}
     }
 
+    let folder = validate_folder(body.folder.as_deref())?;
+
     let mut db = state.db.lock().unwrap();
 
     // Resolve every share target *before* creating anything. Creating first and failing
@@ -363,7 +372,15 @@ async fn create_resource(
     }
 
     let resource = db
-        .create_resource(owner, &body.name, kind, visibility, body.url.as_deref(), now_secs())
+        .create_resource(
+            owner,
+            &body.name,
+            kind,
+            visibility,
+            body.url.as_deref(),
+            folder.as_deref(),
+            now_secs(),
+        )
         .map_err(ApiError::internal)?;
 
     // The share list this request names is the whole share list afterwards.
@@ -374,6 +391,31 @@ async fn create_resource(
     Ok(Json(CreateResourceResponse {
         resource_id: resource.to_string(),
     }))
+}
+
+/// Longest folder name. It is a label on a fold, not a description.
+const MAX_FOLDER: usize = 40;
+
+/// Check a folder name, treating blank as none.
+///
+/// A folder has no existence of its own — it is this string, repeated across the
+/// resources that share it — so "" and absent have to mean the same thing, or a
+/// profile would grow a nameless fold that nothing could remove.
+fn validate_folder(folder: Option<&str>) -> ApiResult<Option<String>> {
+    let Some(folder) = folder.map(str::trim).filter(|f| !f.is_empty()) else {
+        return Ok(None);
+    };
+    if folder.chars().count() > MAX_FOLDER {
+        return Err(ApiError::bad_request(format!(
+            "a folder name may be at most {MAX_FOLDER} characters"
+        )));
+    }
+    // Control characters would survive HTML-escaping and come out as invisible
+    // damage to the summary line.
+    if folder.chars().any(char::is_control) {
+        return Err(ApiError::bad_request("a folder name may not contain control characters"));
+    }
+    Ok(Some(folder.to_string()))
 }
 
 /// Remove a resource. Only its owner can, and only their own.
@@ -412,6 +454,7 @@ async fn list_resources(
             "kind": r.kind.as_str(),
             "visibility": r.visibility.as_str(),
             "url": r.url,
+            "folder": r.folder,
         })).collect::<Vec<_>>()
     })))
 }
@@ -565,6 +608,7 @@ fn to_entry(resource: &crate::db::Resource, owner_handle: Option<String>) -> Pro
         kind: resource.kind.as_str(),
         visibility: resource.visibility.as_str(),
         url: resource.url.clone(),
+        folder: resource.folder.clone(),
         owner_handle,
     }
 }
@@ -658,6 +702,24 @@ mod tests {
         for bad in ["", "abcd", "zz", "89ef8f68b58d5dbfa8501010a0f2ea3afaf80952f04e6767fadbf6d16658e7"] {
             assert!(parse_endpoint_id(bad).is_none(), "{bad:?} should be rejected");
         }
+    }
+
+    #[test]
+    fn blank_folder_names_are_the_same_as_none() {
+        // Otherwise a profile grows a fold with no label that nothing can remove,
+        // because the only way to remove a folder is to stop naming it.
+        for blank in [Some(""), Some("   "), Some("\t"), None] {
+            assert_eq!(validate_folder(blank).unwrap(), None, "{blank:?}");
+        }
+        assert_eq!(validate_folder(Some("  Games ")).unwrap().as_deref(), Some("Games"));
+    }
+
+    #[test]
+    fn folder_names_are_bounded_and_printable() {
+        assert!(validate_folder(Some(&"x".repeat(MAX_FOLDER))).is_ok());
+        assert!(validate_folder(Some(&"x".repeat(MAX_FOLDER + 1))).is_err());
+        assert!(validate_folder(Some("Games\u{0}")).is_err());
+        assert!(validate_folder(Some("two\nlines")).is_err());
     }
 
     #[test]

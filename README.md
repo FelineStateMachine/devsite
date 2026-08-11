@@ -75,9 +75,16 @@ devsite theme set my-theme.css
 devsite daemon run
 ```
 
+Sites can be filed into folders, which render as folds on the profile:
+
+```bash
+devsite link add --name "klot.ski" --url https://klot.ski --public --folder Games
+```
+
 Re-running `link add` or `expose` with the same name edits that entry in place, and
-the share list it names replaces whatever was there — `--share @carol` means the
-resource is Carol's, not Carol's as well. To take something down:
+what the command names is the whole state of it: `--share @carol` means the
+resource is Carol's, not Carol's as well, and leaving `--folder` off takes it out
+of the folder it was in. To take something down:
 
 ```bash
 devsite link remove "Klot Ski"
@@ -146,7 +153,7 @@ fast native tests running the exact code the browser executes.
 cargo test --workspace
 ```
 
-75 tests. The interesting ones are `crates/devsite-daemon/tests/authz.rs`, which drives
+78 tests. The interesting ones are `crates/devsite-daemon/tests/authz.rs`, which drives
 real Iroh against a real local service and asserts that forged, expired, misaddressed,
 rebound, replayed and unknown-resource capabilities are each refused — and that a denial
 tells the caller nothing about which of those it was. `theme.rs` carries the other

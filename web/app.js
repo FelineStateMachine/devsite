@@ -224,6 +224,43 @@ function linkHost(item) {
   return same ? '↗' : `${host} ↗`;
 }
 
+function entryList(items, options = {}) {
+  const list = document.createElement('ul');
+  list.className = 'entries';
+  for (const item of items) {
+    list.append(siteRow(item, { ...options, onClick: () => openService(item) }));
+  }
+  return list;
+}
+
+/// The folders on a profile, in the order they first appear.
+///
+/// Derived from the entries rather than stored anywhere: a folder is a name
+/// repeated across the sites that share it, so this is the only place the set of
+/// them exists. A folder that a viewer may see nothing inside does not appear at
+/// all, because it never gets built.
+function foldersOf(entries) {
+  const folders = new Map();
+  for (const item of entries) {
+    if (!item.folder) continue;
+    if (!folders.has(item.folder)) folders.set(item.folder, []);
+    folders.get(item.folder).push(item);
+  }
+  return folders;
+}
+
+/// One fold. `<details open>` — a profile's job is to show what is on it, so a
+/// folder groups without hiding, and collapsing is the reader's choice.
+function folder(name, items) {
+  const details = document.createElement('details');
+  details.className = 'folder';
+  details.open = true;
+  details.innerHTML =
+    `<summary>${esc(name)} <small>${items.length}</small></summary>`;
+  details.append(entryList(items));
+  return details;
+}
+
 /// A titled list. Used only for "shared with me", which really is a different
 /// thing — other people's sites, on your page — rather than a subdivision of
 /// yours.
@@ -253,16 +290,18 @@ function renderProfile(profile) {
     + `<p>${total === 1 ? '1 site' : `${total} sites`}</p>`;
   article.append(heading);
 
-  // One list, in the order things were published. No sections by kind or by
-  // visibility: a profile is a list of sites, and sorting it into "links" and
-  // "services" would be publishing an implementation detail as a heading.
+  // Loose sites first, in the order they were published, then a fold per folder
+  // in the order those first appear. No sections by kind or by visibility: a
+  // profile is a list of sites, and sorting it into "links" and "services" would
+  // be publishing an implementation detail as a heading. Folders are different —
+  // they are the owner's own grouping, and they say so in the owner's words.
   if (total) {
-    const list = document.createElement('ul');
-    list.className = 'entries';
-    for (const item of profile.entries) {
-      list.append(siteRow(item, { onClick: () => openService(item) }));
+    const loose = profile.entries.filter((item) => !item.folder);
+    if (loose.length) article.append(entryList(loose));
+
+    for (const [name, items] of foldersOf(profile.entries)) {
+      article.append(folder(name, items));
     }
-    article.append(list);
   } else {
     const empty = document.createElement('p');
     empty.innerHTML = '<small>Nothing published yet.</small>';

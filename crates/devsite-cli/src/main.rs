@@ -50,6 +50,10 @@ enum Command {
         /// Share with a specific user, e.g. --share @bob. Repeatable.
         #[arg(long, value_name = "@handle")]
         share: Vec<String>,
+        /// File it under a folder on your profile. Leaving it off takes it out of
+        /// whatever folder it was in.
+        #[arg(long, value_name = "NAME")]
+        folder: Option<String>,
     },
     /// Stop exposing a local service and take it off your profile.
     Unexpose {
@@ -81,6 +85,10 @@ enum LinkCommand {
         url: String,
         #[arg(long)]
         public: bool,
+        /// File it under a folder on your profile. Leaving it off takes it out of
+        /// whatever folder it was in.
+        #[arg(long, value_name = "NAME")]
+        folder: Option<String>,
     },
     /// Take a link off your profile. Re-running `add` with the same name edits
     /// it in place; this is for when it should not be there at all.
@@ -170,8 +178,8 @@ async fn main() -> Result<()> {
         Command::Profile(ProfileCommand::Create { handle }) => {
             create_profile(&paths, &cli.server, &handle).await
         }
-        Command::Link(LinkCommand::Add { name, url, public }) => {
-            add_link(&paths, &cli.server, &name, &url, public).await
+        Command::Link(LinkCommand::Add { name, url, public, folder }) => {
+            add_link(&paths, &cli.server, &name, &url, public, folder).await
         }
         Command::Link(LinkCommand::Remove { name }) => {
             remove_link(&paths, &cli.server, &name).await
@@ -183,7 +191,8 @@ async fn main() -> Result<()> {
             public,
             private,
             share,
-        } => expose(&paths, &cli.server, origin, &name, public, private, share).await,
+            folder,
+        } => expose(&paths, &cli.server, origin, &name, public, private, share, folder).await,
         Command::Theme(command) => theme(&paths, &cli.server, command).await,
         Command::Status => status(&paths),
         Command::Daemon(DaemonCommand::Run) => run_daemon(&paths, &cli.server).await,
@@ -253,7 +262,14 @@ async fn create_profile(paths: &Paths, server: &str, handle: &str) -> Result<()>
     Ok(())
 }
 
-async fn add_link(paths: &Paths, server: &str, name: &str, url: &str, public: bool) -> Result<()> {
+async fn add_link(
+    paths: &Paths,
+    server: &str,
+    name: &str,
+    url: &str,
+    public: bool,
+    folder: Option<String>,
+) -> Result<()> {
     if !public {
         bail!("links are external URLs and are always public; pass --public to confirm");
     }
@@ -267,10 +283,14 @@ async fn add_link(paths: &Paths, server: &str, name: &str, url: &str, public: bo
                 "kind": "link",
                 "visibility": "public",
                 "url": url,
+                "folder": folder,
             }),
         )
         .await?;
     println!("added link {name} → {url}");
+    if let Some(folder) = &folder {
+        println!("  in {folder}");
+    }
     Ok(())
 }
 
@@ -335,6 +355,7 @@ async fn expose(
     public: bool,
     private: bool,
     share: Vec<String>,
+    folder: Option<String>,
 ) -> Result<()> {
     // Refuse to proxy to the public internet: dev.site exposes local services, and an
     // arbitrary upstream would make the daemon a traffic launderer.
@@ -360,6 +381,7 @@ async fn expose(
                 "visibility": visibility_str(visibility),
                 // Deliberately absent: the local origin never leaves this machine.
                 "share_with": share.iter().map(|h| h.trim_start_matches('@')).collect::<Vec<_>>(),
+                "folder": folder,
             }),
         )
         .await?;
@@ -380,6 +402,9 @@ async fn expose(
     paths.save_config(&config)?;
 
     println!("exposed {name} → {origin} ({})", visibility_str(visibility));
+    if let Some(folder) = &folder {
+        println!("  in {folder}");
+    }
     if !share.is_empty() {
         println!("  shared with {}", share.join(", "));
     }

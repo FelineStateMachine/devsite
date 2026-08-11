@@ -59,7 +59,7 @@ changes here and changes to the whitelist belong in the same commit.
         <p>3 sites</p>
       </hgroup>
 
-      <!-- one list, in the order things were published -->
+      <!-- loose sites first, in the order they were published -->
       <ul class="entries">
         <!-- reached at its own address, so it is an anchor and takes you away -->
         <li class="entry" data-kind="link" data-visibility="public">
@@ -74,6 +74,12 @@ changes here and changes to the whitelist belong in the same commit.
           <small class="state">private</small>
         </li>
       </ul>
+
+      <!-- then a fold per folder, in the order those first appear -->
+      <details class="folder" open>
+        <summary>Games <small>3</small></summary>
+        <ul class="entries">…</ul>
+      </details>
 
       <!-- other people's sites, on your own profile only -->
       <section class="group" data-visibility="shared-with-me">
@@ -100,6 +106,22 @@ offered.
 
 There is deliberately no reachability state to style: the page does not know
 whether a daemon is running, and says so by saying nothing.
+
+## Folders
+
+A folder is a name on a site, not a thing of its own — `devsite link add --folder
+Games` files one, and leaving `--folder` off takes it out again. There is nothing
+to create and nothing to delete, so a profile can never be left holding an empty
+one, and renaming a folder is retagging what is in it.
+
+That falls out of the rendering too. The set of folders is derived from the
+entries the viewer is allowed to see, so a folder holding only private sites does
+not appear to a stranger as an empty fold — it is never built at all.
+
+Folds are `<details open>`. A profile's job is to show what is on it, so a folder
+groups without hiding, and collapsing is the reader's choice rather than the
+owner's. Pico draws the marker and handles the open state; `.folder > summary`
+is the label.
 
 `--pico-ins-color` and `--pico-del-color` are still in the whitelist, and are
 what the viewer's success and failure messages are drawn with.

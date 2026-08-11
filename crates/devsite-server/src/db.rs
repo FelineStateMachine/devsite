@@ -83,6 +83,11 @@ const MIGRATIONS: &[&str] = &[
     "ALTER TABLE daemons DROP COLUMN relay_url;
      ALTER TABLE daemons DROP COLUMN serving;
      ALTER TABLE daemons DROP COLUMN last_seen;",
+    // Folders. Deliberately a name on the resource rather than a table of its
+    // own: a folder then exists exactly as long as something is in it. Nothing
+    // to create, nothing to delete, no way to be left holding an empty one, and
+    // renaming is retagging.
+    "ALTER TABLE resources ADD COLUMN folder TEXT;",
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -113,6 +118,9 @@ pub struct Resource {
     pub kind: ResourceKind,
     pub visibility: Visibility,
     pub url: Option<String>,
+    /// The folder it sits in, if any. A folder is just this name repeated across
+    /// the resources that share it.
+    pub folder: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -302,6 +310,7 @@ impl Db {
         kind: ResourceKind,
         visibility: Visibility,
         url: Option<&str>,
+        folder: Option<&str>,
         now: u64,
     ) -> Result<ResourceId> {
         let existing: Option<String> = self
@@ -316,16 +325,16 @@ impl Db {
         if let Some(id) = existing {
             let id = ResourceId::from_str(&id)?;
             self.conn.execute(
-                "UPDATE resources SET visibility = ?1, url = ?2 WHERE id = ?3",
-                params![visibility.as_str(), url, id.to_string()],
+                "UPDATE resources SET visibility = ?1, url = ?2, folder = ?3 WHERE id = ?4",
+                params![visibility.as_str(), url, folder, id.to_string()],
             )?;
             return Ok(id);
         }
 
         let id = ResourceId::generate();
         self.conn.execute(
-            "INSERT INTO resources (id, owner_id, name, kind, visibility, url, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO resources (id, owner_id, name, kind, visibility, url, folder, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id.to_string(),
                 owner.to_string(),
@@ -333,6 +342,7 @@ impl Db {
                 kind.as_str(),
                 visibility.as_str(),
                 url,
+                folder,
                 now as i64
             ],
         )?;
@@ -342,7 +352,7 @@ impl Db {
     pub fn resource(&self, id: ResourceId) -> Result<Option<Resource>> {
         self.conn
             .query_row(
-                "SELECT id, owner_id, name, kind, visibility, url FROM resources WHERE id = ?1",
+                "SELECT id, owner_id, name, kind, visibility, url, folder FROM resources WHERE id = ?1",
                 params![id.to_string()],
                 row_to_resource,
             )
@@ -352,7 +362,7 @@ impl Db {
 
     pub fn resources_owned_by(&self, owner: AccountId) -> Result<Vec<Resource>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, owner_id, name, kind, visibility, url FROM resources
+            "SELECT id, owner_id, name, kind, visibility, url, folder FROM resources
              WHERE owner_id = ?1 ORDER BY created_at",
         )?;
         let rows = stmt
@@ -364,7 +374,7 @@ impl Db {
     /// Resources belonging to other people that were explicitly shared with `viewer`.
     pub fn resources_shared_with(&self, viewer: AccountId) -> Result<Vec<Resource>> {
         let mut stmt = self.conn.prepare(
-            "SELECT r.id, r.owner_id, r.name, r.kind, r.visibility, r.url
+            "SELECT r.id, r.owner_id, r.name, r.kind, r.visibility, r.url, r.folder
              FROM resources r
              JOIN shares s ON s.resource_id = r.id
              WHERE s.viewer_id = ?1 AND r.owner_id != ?1
@@ -494,6 +504,7 @@ fn row_to_resource(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Resource>
     let kind: String = row.get(3)?;
     let visibility: String = row.get(4)?;
     let url: Option<String> = row.get(5)?;
+    let folder: Option<String> = row.get(6)?;
 
     Ok((|| {
         Ok(Resource {
@@ -503,6 +514,7 @@ fn row_to_resource(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Resource>
             kind: ResourceKind::parse(&kind).context("unknown resource kind")?,
             visibility: Visibility::parse(&visibility).context("unknown visibility")?,
             url,
+            folder,
         })
     })())
 }
@@ -538,7 +550,7 @@ mod tests {
         db.set_handle(carol.id, "carol").unwrap();
 
         let agent = db
-            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, None, 0)
             .unwrap();
 
         db.set_shares(agent, &[bob.id]).unwrap();
@@ -558,10 +570,39 @@ mod tests {
     }
 
     #[test]
+    fn a_folder_is_set_replaced_and_cleared_by_naming_it_or_not() {
+        // A folder has no independent existence — it is this string on however
+        // many resources carry it — so re-adding without one takes the resource
+        // out of it, the same way re-sharing without a handle revokes.
+        let (db, alice, _) = seeded();
+
+        let id = db
+            .create_resource(alice.id, "klot.ski", ResourceKind::Link, Visibility::Public,
+                             Some("https://klot.ski"), Some("Games"), 0)
+            .unwrap();
+        assert_eq!(db.resource(id).unwrap().unwrap().folder.as_deref(), Some("Games"));
+
+        let same = db
+            .create_resource(alice.id, "klot.ski", ResourceKind::Link, Visibility::Public,
+                             Some("https://klot.ski"), Some("Toys"), 0)
+            .unwrap();
+        assert_eq!(same, id, "re-adding must not make a second entry");
+        assert_eq!(db.resource(id).unwrap().unwrap().folder.as_deref(), Some("Toys"));
+
+        db.create_resource(alice.id, "klot.ski", ResourceKind::Link, Visibility::Public,
+                           Some("https://klot.ski"), None, 0)
+            .unwrap();
+        assert!(
+            db.resource(id).unwrap().unwrap().folder.is_none(),
+            "naming no folder should take it out of the one it was in"
+        );
+    }
+
+    #[test]
     fn deleting_a_resource_takes_its_shares_with_it() {
         let (mut db, alice, bob) = seeded();
         let agent = db
-            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, None, 0)
             .unwrap();
         db.set_shares(agent, &[bob.id]).unwrap();
 
@@ -580,7 +621,7 @@ mod tests {
     fn you_can_only_delete_your_own_resources() {
         let (mut db, alice, bob) = seeded();
         let hermes = db
-            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Shared, None, None, 0)
             .unwrap();
         // Shared with Bob, so he can see it — which must not extend to removing it.
         db.set_shares(hermes, &[bob.id]).unwrap();
@@ -593,10 +634,10 @@ mod tests {
     fn shares_are_visible_to_the_named_viewer_only() {
         let (mut db, alice, bob) = seeded();
         let agent = db
-            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, None, 0)
             .unwrap();
         let hermes = db
-            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Private, None, 0)
+            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Private, None, None, 0)
             .unwrap();
         db.set_shares(agent, &[bob.id]).unwrap();
 
@@ -613,7 +654,7 @@ mod tests {
     fn owners_do_not_see_their_own_resources_as_shared_with_them() {
         let (mut db, alice, bob) = seeded();
         let agent = db
-            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, None, 0)
             .unwrap();
         db.set_shares(agent, &[bob.id, alice.id]).unwrap();
         assert!(
@@ -701,10 +742,10 @@ mod tests {
         // the same thing.
         let (db, alice, _) = seeded();
         let first = db
-            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Private, None, 0)
+            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Private, None, None, 0)
             .unwrap();
         let second = db
-            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Shared, None, 10)
+            .create_resource(alice.id, "Hermes", ResourceKind::Service, Visibility::Shared, None, None, 10)
             .unwrap();
 
         assert_eq!(first, second, "re-exposing must reuse the resource id");
@@ -717,10 +758,10 @@ mod tests {
     fn different_people_may_use_the_same_service_name() {
         let (db, alice, bob) = seeded();
         let a = db
-            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Private, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Private, None, None, 0)
             .unwrap();
         let b = db
-            .create_resource(bob.id, "Agent", ResourceKind::Service, Visibility::Private, None, 0)
+            .create_resource(bob.id, "Agent", ResourceKind::Service, Visibility::Private, None, None, 0)
             .unwrap();
         assert_ne!(a, b, "names are scoped to their owner");
     }
@@ -732,7 +773,7 @@ mod tests {
         // it. A share pointing at a deleted resource would have been left behind.
         let (mut db, alice, bob) = seeded();
         let agent = db
-            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, 0)
+            .create_resource(alice.id, "Agent", ResourceKind::Service, Visibility::Shared, None, None, 0)
             .unwrap();
         db.set_shares(agent, &[bob.id]).unwrap();
 
