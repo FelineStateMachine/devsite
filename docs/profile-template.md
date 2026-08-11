@@ -52,10 +52,10 @@ changes here and changes to the whitelist belong in the same commit.
             <a href="https://klot.ski" target="_blank" rel="noopener noreferrer">Klot Ski</a>
             <small class="state">klot.ski ↗</small>
           </li>
-          <!-- a service opens here, so it is a button -->
-          <li class="entry" data-kind="service" data-state="online">
+          <!-- a service opens here, so it is a button. It carries no state:
+               nothing knows whether it is reachable until you ask it. -->
+          <li class="entry" data-kind="service">
             <button class="outline">Hermes</button>
-            <small class="state">online</small>
           </li>
         </ul>
       </section>
@@ -70,10 +70,12 @@ changes here and changes to the whitelist belong in the same commit.
 </body>
 ```
 
-Reachability is carried by `data-state` on the entry, and drawn with Pico's own
-`--pico-ins-color` and `--pico-del-color` — so a theme that restyles inserted and
-deleted text restyles online and offline with it, rather than leaving one green
-smear behind.
+Entries carry `data-kind` so a theme can tell a link from a service, and nothing
+else. There is deliberately no reachability state to style: the page does not
+know whether a daemon is running, and says so by saying nothing.
+
+`--pico-ins-color` and `--pico-del-color` are still in the whitelist, and are
+what the viewer's success and failure messages are drawn with.
 
 ## What a theme may set
 

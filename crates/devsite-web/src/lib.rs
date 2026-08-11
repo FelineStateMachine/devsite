@@ -46,24 +46,24 @@ impl BrowserEndpoint {
 
     /// Fetch a page from a daemon and return it as text for a sandboxed iframe.
     ///
+    /// The daemon is named by its endpoint id and nothing else. Where it can be
+    /// reached is iroh's problem: the daemon publishes its own address, and this
+    /// endpoint resolves it over HTTPS. The control plane is not asked, and does
+    /// not know.
+    ///
     /// `capability_b64` comes straight from the control plane and is passed through
     /// opaquely — the browser is a courier for it, not a party to what it says.
     #[wasm_bindgen(js_name = fetchPage)]
     pub async fn fetch_page(
         &self,
         daemon_endpoint_id: String,
-        relay_url: String,
         capability_b64: String,
         path: String,
     ) -> Result<String, JsError> {
-        let daemon = daemon_endpoint_id
+        let daemon: iroh::EndpointId = daemon_endpoint_id
             .trim()
             .parse()
             .map_err(|_| JsError::new("that does not look like an endpoint id"))?;
-        let relay = relay_url
-            .trim()
-            .parse()
-            .map_err(|_| JsError::new("that does not look like a relay url"))?;
         let raw = data_encoding::BASE64URL_NOPAD
             .decode(capability_b64.trim().as_bytes())
             .map_err(|_| JsError::new("capability is not valid base64url"))?;
@@ -72,7 +72,7 @@ impl BrowserEndpoint {
 
         let page = self
             .inner
-            .fetch(daemon, relay, capability, &path)
+            .fetch(daemon, capability, &path)
             .await
             .map_err(|err| JsError::new(&format!("{err:#}")))?;
 

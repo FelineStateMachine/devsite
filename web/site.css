@@ -96,17 +96,10 @@ body > main {
 .entries > li > :is(a, button, [role='button']) {
   margin-bottom: 0;
 }
+/* Links carry their host here. Services carry nothing: whether one is reachable
+ * is not known until you ask it. */
 .entries .state {
   white-space: nowrap;
-}
-
-/* Reachability reuses Pico's own semantic colours, so a user theme that changes
- * --pico-ins-color changes this too. */
-.entries > li[data-state='online'] .state {
-  color: var(--pico-ins-color);
-}
-.entries > li[data-state='offline'] .state {
-  color: var(--pico-del-color);
 }
 
 /* -- the viewer ------------------------------------------------------------ */

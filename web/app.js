@@ -164,25 +164,27 @@ function renderSession() {
     : '<li><small>no handle yet</small></li>';
 }
 
-/// One row of a profile: a name on the left, its state on the right.
+/// One row of a profile.
 ///
 /// Links are anchors and services are buttons, because a link goes somewhere and
-/// a service opens here. Nothing about that changes with the theme.
-function entry({ kind, name, state, online, href, onClick }) {
+/// a service opens here.
+///
+/// A service carries no reachability state. Nothing on this page knows whether
+/// the far end is running — the control plane is not told, and the only thing
+/// that could answer is a connection attempt. So the row makes no claim, and
+/// clicking it finds out.
+function entry({ kind, name, state, href, onClick }) {
   const li = document.createElement('li');
   li.className = 'entry';
   li.dataset.kind = kind;
-  if (online !== undefined) li.dataset.state = online ? 'online' : 'offline';
 
   if (href) {
     li.innerHTML =
       `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${name}</a>` +
       `<small class="state">${esc(state)}</small>`;
   } else {
-    li.innerHTML =
-      `<button class="outline${online ? '' : ' secondary'}"${online ? '' : ' disabled'}>${name}</button>` +
-      `<small class="state">${esc(state)}</small>`;
-    if (online && onClick) li.querySelector('button').addEventListener('click', onClick);
+    li.innerHTML = `<button class="outline">${name}</button>`;
+    if (onClick) li.querySelector('button').addEventListener('click', onClick);
   }
   return li;
 }
@@ -233,8 +235,6 @@ function renderProfile(profile) {
       buckets[item.visibility].push(entry({
         kind: 'service',
         name: esc(item.name),
-        state: item.online ? 'online' : 'offline',
-        online: item.online,
         onClick: () => openService(item),
       }));
     }
@@ -251,8 +251,6 @@ function renderProfile(profile) {
     const rows = profile.shared_with_me.map((item) => entry({
       kind: 'service',
       name: `${esc(item.name)} <small>from @${esc(item.owner_handle)}</small>`,
-      state: item.online ? 'online' : 'offline',
-      online: item.online,
       onClick: () => openService(item),
     }));
     article.append(group('Shared with me', 'shared-with-me', rows));
@@ -391,13 +389,11 @@ async function openService(item) {
     });
 
     paintHops(2);
-    status.textContent = 'Connecting through the relay';
-    const html = await endpoint.fetchPage(
-      grant.daemon_endpoint_id,
-      grant.relay_url,
-      grant.capability,
-      '/',
-    );
+    status.textContent = 'Looking up the daemon and connecting';
+    // The daemon is named, not located: `fetchPage` takes an endpoint id and lets
+    // iroh resolve where it currently is. This is also the step that discovers
+    // whether it is running at all, and it gives up after a few seconds.
+    const html = await endpoint.fetchPage(grant.daemon_endpoint_id, grant.capability, '/');
 
     paintHops(3);
     mountFrame(html);
@@ -406,8 +402,22 @@ async function openService(item) {
   } catch (err) {
     status.removeAttribute('aria-busy');
     status.setAttribute('aria-invalid', 'true');
-    status.textContent = String(err.message || err);
+    status.innerHTML = unreachable(err)
+      ? `<span class="error">Couldn't reach ${esc(item.name)}.</span> ` +
+        `Nothing answered on that machine — is <code>devsite daemon run</code> running?`
+      : `<span class="error">${esc(String(err.message || err))}</span>`;
   }
+}
+
+/// Whether a failure means "nobody answered" rather than "they said no".
+///
+/// Worth distinguishing in the message: a refusal is a decision the daemon made
+/// and the viewer cannot fix, while silence is nearly always a daemon that is
+/// not running.
+function unreachable(err) {
+  const message = String(err?.message || err);
+  return message.includes('no answer from the daemon')
+    || message.includes('connecting to daemon');
 }
 
 // -- setup views ---------------------------------------------------------------

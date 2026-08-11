@@ -789,6 +789,7 @@ dependencies = [
  "anyhow",
  "devsite-proto",
  "iroh",
+ "n0-future",
  "thiserror 2.0.20",
  "tracing",
 ]

@@ -93,7 +93,7 @@ const PROPERTIES: &[(&str, Kind)] = &[
     ("--pico-mark-background-color", Kind::Color),
     ("--pico-mark-color", Kind::Color),
     ("--pico-blockquote-border-color", Kind::Color),
-    // `ins` and `del` also carry the online/offline state of a service.
+    // `ins` and `del` also colour the site's own confirmations and refusals.
     ("--pico-ins-color", Kind::Color),
     ("--pico-del-color", Kind::Color),
     // -- form elements -------------------------------------------------------

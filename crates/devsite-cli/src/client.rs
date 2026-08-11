@@ -1,4 +1,4 @@
-//! Thin HTTP client for the control plane, used by the CLI and the daemon's heartbeat.
+//! Thin HTTP client for the control plane, used by the CLI and the daemon.
 
 use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
@@ -56,14 +56,14 @@ impl ControlPlane {
         decode(response, path).await
     }
 
-    /// POST where a 2xx with no body is the expected success.
-    pub async fn post_empty<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
+    /// PUT where a 2xx with no body is the expected success.
+    pub async fn put_empty<B: Serialize>(&self, path: &str, body: &B) -> Result<()> {
         let response = self
-            .request(reqwest::Method::POST, path)
+            .request(reqwest::Method::PUT, path)
             .json(body)
             .send()
             .await
-            .with_context(|| format!("POST {path}"))?;
+            .with_context(|| format!("PUT {path}"))?;
         if !response.status().is_success() {
             bail!("{path} failed: {}", error_text(response).await);
         }

@@ -22,7 +22,8 @@ Findings:
 ## M2 — Control plane ✅
 
 Accounts, sessions, profiles, resource registration, sharing, daemon heartbeat/presence,
-and profile rendering, all filtered through one `can_view` choke point.
+and profile rendering, all filtered through one `can_view` choke point. (The heartbeat and
+presence half of that was removed in M8 — see below.)
 
 Auth is **Shoo** (`https://shoo.dev`) — an OIDC broker that is **Google-backed, not
 GitHub**, despite the initial assumption. Real OIDC: authorize + PKCE S256 in the browser,
@@ -138,6 +139,46 @@ What follows from that:
 website, `devsite theme properties` and the docs cannot drift from what is accepted.
 
 See `docs/profile-template.md`.
+
+## M8 — No heartbeat ✅
+
+The daemon used to POST `/api/daemon/heartbeat` every 15 seconds, carrying its endpoint id,
+its relay url, and the resource ids it served. All three are gone.
+
+Reading iroh's `presets::N0` settles it. The preset installs a `PkarrPublisher` on the
+daemon and a `PkarrResolver` on the viewer, and the resolver works **in the browser**, over
+HTTPS to the n0 DNS server's `/pkarr` path — plain DNS is added only outside browsers. The
+daemon was already publishing its own address and the browser could already resolve it. The
+`with_relay_url()` in `connection_to` was feeding iroh something it would have found itself.
+
+Taking the three fields in turn:
+
+- **`relay_url`** was redundant, as above.
+- **`endpoint_id`** is the public half of the key at `DEVSITE_HOME/identity`. It is the
+  same on every run, so it is registered once when the daemon starts. `PUT /api/daemon`.
+- **`serving` and `last_seen`** existed for the online/offline dot and a pre-flight refusal
+  in `/api/capability`. The refusal was never a security property — the daemon checks
+  resource-in-local-config on every request regardless, so removing the control-plane check
+  makes nothing more permissive. And the dot was stale by up to 45 seconds; M6 records it
+  lying outright.
+
+So presence is gone entirely. A profile makes no claim about reachability, and clicking a
+service finds out: `ViewerEndpoint::fetch` takes a bare endpoint id, lets iroh resolve it,
+and bounds the attempt with `CONNECT_TIMEOUT`. "Offline" now means "we asked and nobody
+answered", which is the only thing that was ever true.
+
+What this bought:
+
+- **Steady-state writes go to zero.** The database is read-mostly; the write path is a
+  handful of rows per user per lifetime rather than 5,760 per daemon per day.
+- **No timer on the user's machine**, and no 15-second wakeups against a laptop's radio.
+- **The control plane is out of the addressing path**, which is what it always claimed.
+
+The cost is honest and worth naming: a dead daemon takes `CONNECT_TIMEOUT` to report rather
+than being greyed out in advance.
+
+Verified in a browser against a real daemon: reached with only an endpoint id and no relay
+url anywhere in the response, then killed the daemon and got the timeout and its message.
 
 ## Next
 

@@ -15,9 +15,11 @@ browser (ephemeral Iroh key)
    │  1. POST /api/capability {resource_id, browser_endpoint_id}
    ▼
 dev.site control plane ── authorizes, signs a short-lived capability (Ed25519)
-   │  2. {capability, daemon endpoint id, relay url}
+   │  2. {capability, daemon endpoint id}
    ▼
 browser ──── 3. Iroh, end-to-end encrypted via relay ────► your daemon
+             (address resolved from the daemon's own
+              published record, not from dev.site)
                                                               │ 4. verify
                                                               ▼ signature · audience ·
                                                                 expiry · browser key vs
@@ -29,6 +31,12 @@ browser ──── 3. Iroh, end-to-end encrypted via relay ────► you
 The browser never names an upstream URL. The daemon resolves the origin from its own
 config, keyed by resource id — that is what keeps it from being an open proxy. The control
 plane holds permissions but never carries service traffic.
+
+It is not a directory either. It stores a daemon's endpoint id — written once, because the
+id is the public half of a key on disk and does not change — and nothing about where that
+endpoint is or whether it is up. Iroh already answers both: the daemon publishes its own
+address, and the browser resolves it over HTTPS. There is no heartbeat and no presence
+service. Whether a service is running is discovered by asking it.
 
 ## Prerequisites
 

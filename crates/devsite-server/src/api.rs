@@ -14,7 +14,7 @@ use devsite_proto::{AccountId, ResourceId};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{self, ShooVerifier};
-use crate::db::{Db, DaemonPresence, ResourceKind};
+use crate::db::{Db, ResourceKind};
 use crate::issuer::Issuer;
 use crate::policy::{can_view, Visibility};
 use crate::theme;
@@ -144,13 +144,8 @@ pub struct CreateResourceResponse {
 }
 
 #[derive(Deserialize)]
-pub struct HeartbeatRequest {
+pub struct RegisterDaemonRequest {
     pub endpoint_id: String,
-    pub relay_url: String,
-    /// The resources this daemon is currently configured to serve. A resource missing from
-    /// this list is reported offline even while the daemon itself is healthy.
-    #[serde(default)]
-    pub serving: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -160,8 +155,6 @@ pub struct ProfileEntry {
     pub kind: &'static str,
     pub visibility: &'static str,
     pub url: Option<String>,
-    /// `None` for links, which have no daemon behind them.
-    pub online: Option<bool>,
     /// Present only on "shared with me" entries.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub owner_handle: Option<String>,
@@ -202,8 +195,9 @@ pub struct CapabilityRequest {
 pub struct CapabilityResponse {
     /// base64url of the postcard-encoded signed capability.
     pub capability: String,
+    /// Who to present it to. Not where they are — the browser resolves that
+    /// through iroh's address lookup, from the daemon's own published record.
     pub daemon_endpoint_id: String,
-    pub relay_url: String,
 }
 
 // -- routes --------------------------------------------------------------------
@@ -216,7 +210,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/me", get(me))
         .route("/api/profile", post(claim_handle))
         .route("/api/resources", post(create_resource).get(list_resources))
-        .route("/api/daemon/heartbeat", post(heartbeat))
+        .route("/api/daemon", axum::routing::put(register_daemon))
         .route("/api/theme", get(read_theme).put(write_theme))
         .route("/api/theme/properties", get(theme_properties))
         .route("/api/profile/{handle}", get(profile))
@@ -399,33 +393,27 @@ async fn list_resources(
     })))
 }
 
-async fn heartbeat(
+/// Record which endpoint id this account's daemon answers on.
+///
+/// Called once when a daemon starts, not on a timer. The id is stable across
+/// restarts, and where that endpoint can be reached is published by the daemon
+/// itself and resolved by the browser — the control plane is not in the
+/// addressing path and does not want to be.
+async fn register_daemon(
     State(state): State<Shared>,
     headers: HeaderMap,
-    Json(body): Json<HeartbeatRequest>,
+    Json(body): Json<RegisterDaemonRequest>,
 ) -> ApiResult<impl IntoResponse> {
     let account = require_account(&state, &headers)?;
-    // Validate before storing so a malformed relay url cannot poison later reads.
-    url::Url::parse(&body.relay_url).map_err(|_| ApiError::bad_request("relay_url is not a url"))?;
+    // Validated before storing: a malformed id would be handed to browsers as
+    // something to go looking for, and fail somewhere much less obvious.
     if parse_endpoint_id(&body.endpoint_id).is_none() {
         return Err(ApiError::bad_request("endpoint_id is not a 32 byte hex key"));
     }
 
-    let serving: Vec<ResourceId> = body
-        .serving
-        .iter()
-        .filter_map(|id| ResourceId::from_str(id).ok())
-        .collect();
-
     let db = state.db.lock().unwrap();
-    db.record_heartbeat(
-        account,
-        &body.endpoint_id,
-        &body.relay_url,
-        &serving,
-        now_secs(),
-    )
-    .map_err(ApiError::internal)?;
+    db.register_daemon(account, &body.endpoint_id)
+        .map_err(ApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -486,15 +474,12 @@ async fn profile(
 ) -> ApiResult<impl IntoResponse> {
     let viewer = current_account(&state, &headers)?;
     let handle = handle.trim_start_matches('@').to_ascii_lowercase();
-    let now = now_secs();
 
     let db = state.db.lock().unwrap();
     let owner = db
         .account_by_handle(&handle)
         .map_err(ApiError::internal)?
         .ok_or_else(ApiError::not_found)?;
-
-    let presence = db.daemon(owner.id).map_err(ApiError::internal)?;
 
     let mut entries = Vec::new();
     for resource in db.resources_owned_by(owner.id).map_err(ApiError::internal)? {
@@ -504,10 +489,7 @@ async fn profile(
         if !can_view(viewer, owner.id, resource.visibility, &shared_with) {
             continue;
         }
-        let reachable = presence
-            .as_ref()
-            .is_some_and(|p| p.is_serving(resource.id, now));
-        entries.push(to_entry(&resource, Some(reachable), None));
+        entries.push(to_entry(&resource, None));
     }
 
     // "Shared with me" belongs on your own profile, not on everyone else's. Listing it on
@@ -525,15 +507,7 @@ async fn profile(
             let owner_account = db
                 .account_by_id(resource.owner_id)
                 .map_err(ApiError::internal)?;
-            let reachable = db
-                .daemon(resource.owner_id)
-                .map_err(ApiError::internal)?
-                .is_some_and(|p| p.is_serving(resource.id, now));
-            shared_with_me.push(to_entry(
-                &resource,
-                Some(reachable),
-                owner_account.and_then(|a| a.handle),
-            ));
+            shared_with_me.push(to_entry(&resource, owner_account.and_then(|a| a.handle)));
         }
     }
 
@@ -558,21 +532,13 @@ async fn profile(
     }))
 }
 
-fn to_entry(
-    resource: &crate::db::Resource,
-    online: Option<bool>,
-    owner_handle: Option<String>,
-) -> ProfileEntry {
+fn to_entry(resource: &crate::db::Resource, owner_handle: Option<String>) -> ProfileEntry {
     ProfileEntry {
         resource_id: resource.id.to_string(),
         name: resource.name.clone(),
         kind: resource.kind.as_str(),
         visibility: resource.visibility.as_str(),
         url: resource.url.clone(),
-        online: match resource.kind {
-            ResourceKind::Link => None,
-            ResourceKind::Service => Some(online.unwrap_or(false)),
-        },
         owner_handle,
     }
 }
@@ -592,7 +558,7 @@ async fn capability(
     let browser_key =
         parse_endpoint_id(&body.browser_endpoint_id).ok_or_else(|| ApiError::bad_request("browser_endpoint_id is not a 32 byte hex key"))?;
 
-    let (resource, presence) = {
+    let (resource, endpoint_id) = {
         let db = state.db.lock().unwrap();
         let resource = db
             .resource(resource_id)
@@ -611,36 +577,34 @@ async fn capability(
         if resource.kind != ResourceKind::Service {
             return Err(ApiError::bad_request("that resource is a link, not a service"));
         }
-        let presence = db.daemon(resource.owner_id).map_err(ApiError::internal)?;
-        (resource, presence)
+        let endpoint_id = db
+            .daemon_endpoint(resource.owner_id)
+            .map_err(ApiError::internal)?;
+        (resource, endpoint_id)
     };
 
-    let presence: DaemonPresence = presence.ok_or_else(|| {
-        ApiError(StatusCode::SERVICE_UNAVAILABLE, "that service is offline".into())
-    })?;
-    let now = now_secs();
-    // Not merely "is the daemon alive" — is it still exposing *this* resource. Issuing a
-    // capability for something the daemon has stopped serving just produces a confusing
-    // denial at the far end instead of an honest answer here.
-    if !presence.is_serving(resource.id, now) {
-        return Err(ApiError(
+    // The only thing that can be answered from here. Whether the daemon is
+    // *running* is not knowable at this end without asking it, so the browser
+    // asks it directly and reports what it finds. This case is the narrower one:
+    // no daemon has ever registered, so there is not even an address to try.
+    let endpoint_id = endpoint_id.ok_or_else(|| {
+        ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
-            "that service is offline".into(),
-        ));
-    }
+            "no daemon has been registered for that service — run `devsite daemon run`".into(),
+        )
+    })?;
 
-    let audience = parse_endpoint_id(&presence.endpoint_id)
+    let audience = parse_endpoint_id(&endpoint_id)
         .ok_or_else(|| ApiError::internal(anyhow::anyhow!("stored daemon endpoint id is invalid")))?;
 
     let capability = state
         .issuer
-        .issue(viewer, resource.id, audience, browser_key, now)
+        .issue(viewer, resource.id, audience, browser_key, now_secs())
         .map_err(ApiError::internal)?;
 
     Ok(Json(CapabilityResponse {
         capability: data_encoding::BASE64URL_NOPAD.encode(&capability.to_bytes()),
-        daemon_endpoint_id: presence.endpoint_id,
-        relay_url: presence.relay_url.to_string(),
+        daemon_endpoint_id: endpoint_id,
     }))
 }
 

@@ -34,7 +34,8 @@ pub struct ExposedResource {
 pub struct DaemonConfig {
     /// Base URL of the control plane, e.g. `https://dev.site`.
     pub server_url: Option<String>,
-    /// Session token from `devsite login`, used for heartbeats and CLI calls.
+    /// Session token from `devsite login`, used for CLI calls and for registering
+    /// this daemon's endpoint id when it starts.
     pub session_token: Option<String>,
     /// The control plane's capability-signing public key, pinned at login.
     ///

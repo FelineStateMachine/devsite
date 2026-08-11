@@ -8,7 +8,6 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use devsite_proto::{AccountId, ResourceId};
 use rusqlite::{params, Connection, OptionalExtension};
-use url::Url;
 
 use crate::policy::Visibility;
 
@@ -75,6 +74,15 @@ const MIGRATIONS: &[&str] = &[
     // JSON array of the resource ids a daemon is actually configured to serve, so a
     // resource can be reported reachable only if its owner's daemon still exposes it.
     "ALTER TABLE daemons ADD COLUMN serving TEXT NOT NULL DEFAULT '[]';",
+    // Presence is gone, and with it the 15-second heartbeat that maintained these
+    // three columns. A daemon's endpoint id is derived from its secret key and
+    // never changes, so it is registered once; its address is published by the
+    // daemon itself through iroh's address lookup and resolved by the browser,
+    // which is why the control plane no longer stores a relay url. What remains
+    // is the identity a capability is addressed to.
+    "ALTER TABLE daemons DROP COLUMN relay_url;
+     ALTER TABLE daemons DROP COLUMN serving;
+     ALTER TABLE daemons DROP COLUMN last_seen;",
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -86,9 +94,6 @@ fn migrate(conn: &Connection) -> Result<()> {
     }
     Ok(())
 }
-
-/// A daemon is considered online if it has checked in this recently.
-pub const PRESENCE_WINDOW_SECS: u64 = 45;
 
 pub struct Db {
     conn: Connection,
@@ -130,26 +135,6 @@ impl ResourceKind {
             "service" => Some(ResourceKind::Service),
             _ => None,
         }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DaemonPresence {
-    pub endpoint_id: String,
-    pub relay_url: Url,
-    pub serving: Vec<ResourceId>,
-    pub last_seen: u64,
-}
-
-impl DaemonPresence {
-    /// Whether the daemon itself has checked in recently.
-    pub fn is_online(&self, now: u64) -> bool {
-        now.saturating_sub(self.last_seen) <= PRESENCE_WINDOW_SECS
-    }
-
-    /// Whether a specific resource is actually reachable right now.
-    pub fn is_serving(&self, resource: ResourceId, now: u64) -> bool {
-        self.is_online(now) && self.serving.contains(&resource)
     }
 }
 
@@ -415,61 +400,33 @@ impl Db {
         Ok(())
     }
 
-    // -- daemon presence --------------------------------------------------------
+    // -- daemon identity --------------------------------------------------------
 
-    pub fn record_heartbeat(
-        &self,
-        account: AccountId,
-        endpoint_id: &str,
-        relay_url: &str,
-        serving: &[ResourceId],
-        now: u64,
-    ) -> Result<()> {
-        let serving = serde_json::to_string(
-            &serving.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        )?;
+    /// Record which endpoint id an account's daemon answers on.
+    ///
+    /// Written once, when a daemon starts, rather than on a timer: the id is the
+    /// public half of the key at `DEVSITE_HOME/identity`, so it survives restarts
+    /// and only changes if that file does. It says nothing about whether the
+    /// daemon is running — only who to address a capability to, and who the
+    /// browser should go looking for.
+    pub fn register_daemon(&self, account: AccountId, endpoint_id: &str) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO daemons (account_id, endpoint_id, relay_url, serving, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(account_id) DO UPDATE SET
-                endpoint_id = excluded.endpoint_id,
-                relay_url = excluded.relay_url,
-                serving = excluded.serving,
-                last_seen = excluded.last_seen",
-            params![account.to_string(), endpoint_id, relay_url, serving, now as i64],
+            "INSERT INTO daemons (account_id, endpoint_id) VALUES (?1, ?2)
+             ON CONFLICT(account_id) DO UPDATE SET endpoint_id = excluded.endpoint_id",
+            params![account.to_string(), endpoint_id],
         )?;
         Ok(())
     }
 
-    pub fn daemon(&self, account: AccountId) -> Result<Option<DaemonPresence>> {
+    pub fn daemon_endpoint(&self, account: AccountId) -> Result<Option<String>> {
         self.conn
             .query_row(
-                "SELECT endpoint_id, relay_url, serving, last_seen FROM daemons
-                 WHERE account_id = ?1",
+                "SELECT endpoint_id FROM daemons WHERE account_id = ?1",
                 params![account.to_string()],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
+                |row| row.get::<_, String>(0),
             )
-            .optional()?
-            .map(|(endpoint_id, relay_url, serving, last_seen)| {
-                let serving: Vec<String> = serde_json::from_str(&serving).unwrap_or_default();
-                Ok(DaemonPresence {
-                    endpoint_id,
-                    relay_url: Url::parse(&relay_url)?,
-                    serving: serving
-                        .iter()
-                        .filter_map(|id| ResourceId::from_str(id).ok())
-                        .collect(),
-                    last_seen: last_seen as u64,
-                })
-            })
-            .transpose()
+            .optional()
+            .map_err(Into::into)
     }
 }
 
@@ -558,23 +515,18 @@ mod tests {
     }
 
     #[test]
-    fn presence_lapses_after_the_window() {
+    fn registering_a_daemon_is_idempotent_and_survives_re_registration() {
         let (db, dami, _) = seeded();
-        let served = ResourceId::generate();
-        let dropped = ResourceId::generate();
-        db.record_heartbeat(dami.id, "abc", "https://relay.example/", &[served], 1000)
-            .unwrap();
-        let presence = db.daemon(dami.id).unwrap().unwrap();
+        assert!(db.daemon_endpoint(dami.id).unwrap().is_none());
 
-        assert!(presence.is_online(1000));
-        assert!(presence.is_online(1000 + PRESENCE_WINDOW_SECS));
-        assert!(!presence.is_online(1001 + PRESENCE_WINDOW_SECS));
+        db.register_daemon(dami.id, "abc").unwrap();
+        db.register_daemon(dami.id, "abc").unwrap();
+        assert_eq!(db.daemon_endpoint(dami.id).unwrap().as_deref(), Some("abc"));
 
-        // Reachability is per resource, not merely per daemon: a live daemon that no
-        // longer exposes something must not have it advertised as reachable.
-        assert!(presence.is_serving(served, 1000));
-        assert!(!presence.is_serving(dropped, 1000));
-        assert!(!presence.is_serving(served, 1001 + PRESENCE_WINDOW_SECS));
+        // A new identity file means a new endpoint id, and the account should
+        // follow it rather than keeping an id nothing answers on.
+        db.register_daemon(dami.id, "def").unwrap();
+        assert_eq!(db.daemon_endpoint(dami.id).unwrap().as_deref(), Some("def"));
     }
 
     #[test]
@@ -582,6 +534,10 @@ mod tests {
         // Simulates the real failure: a database built from an older schema, then opened
         // by a newer binary. Without migrations the new column is silently absent and
         // every read of it fails at runtime.
+        //
+        // It now covers the other direction too. Removing presence dropped three
+        // columns, and a database old enough to still have them — with a
+        // heartbeat's worth of data in them — has to survive being opened.
         let file = std::env::temp_dir().join(format!("devsite-migrate-{}.db", std::process::id()));
         std::fs::remove_file(&file).ok();
 
@@ -594,17 +550,29 @@ mod tests {
             0,
             "the legacy database should look unmigrated"
         );
+        let legacy_account = AccountId::generate().to_string();
+        legacy
+            .execute(
+                "INSERT INTO accounts (id, external_sub, handle, created_at)
+                 VALUES (?1, 'ps_x', 'dami', 0)",
+                params![legacy_account],
+            )
+            .unwrap();
+        legacy
+            .execute(
+                "INSERT INTO daemons (account_id, endpoint_id, relay_url, last_seen)
+                 VALUES (?1, 'abc', 'https://relay.example/', 100)",
+                params![legacy_account],
+            )
+            .unwrap();
         drop(legacy);
 
         let db = Db::open(file.to_str().unwrap()).unwrap();
-        let dami = db.upsert_account("ps_x", 0).unwrap();
-        db.set_handle(dami.id, "dami").unwrap();
-        let resource = ResourceId::generate();
-        db.record_heartbeat(dami.id, "abc", "https://relay.example/", &[resource], 100)
-            .unwrap();
+        let dami = db.account_by_handle("dami").unwrap().unwrap();
 
-        let presence = db.daemon(dami.id).unwrap().unwrap();
-        assert!(presence.is_serving(resource, 100));
+        // The identity survives the columns around it being dropped: an existing
+        // daemon keeps working without re-registering.
+        assert_eq!(db.daemon_endpoint(dami.id).unwrap().as_deref(), Some("abc"));
 
         std::fs::remove_file(&file).ok();
     }

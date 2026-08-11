@@ -24,7 +24,7 @@ use devsite_proto::capability::{
 };
 use devsite_proto::{AccountId, ResourceId};
 use ed25519_dalek::SigningKey;
-use iroh::{RelayUrl, SecretKey};
+use iroh::{EndpointAddr, RelayUrl, SecretKey};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use url::Url;
@@ -175,14 +175,16 @@ impl Harness {
         capability: SignedCapability,
         path: &str,
     ) -> Result<String, FetchError> {
-        who.fetch(
-            self.daemon.endpoint().id(),
-            self.relay.clone(),
-            capability,
-            path,
-        )
-        .await
-        .map(|page| page.text())
+        // The relay is pinned rather than looked up. In the browser a bare
+        // endpoint id is enough — the daemon publishes its address and the viewer
+        // resolves it — but that path depends on a third-party lookup service,
+        // and these tests are about what the daemon enforces, not about how it
+        // was found. Handing the address over directly keeps a denial a denial
+        // and never a lookup that was slow.
+        let addr = EndpointAddr::from(self.daemon.endpoint().id()).with_relay_url(self.relay.clone());
+        who.fetch(addr, capability, path)
+            .await
+            .map(|page| page.text())
     }
 
     async fn fetch(&self, capability: SignedCapability) -> Result<String, FetchError> {

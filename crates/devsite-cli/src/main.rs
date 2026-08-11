@@ -191,7 +191,7 @@ async fn login(paths: &Paths, server: &str, token: Option<String>) -> Result<()>
 
     let api = ControlPlane::new(server, Some(token.clone()));
     // Confirm the token works before storing it, so a typo fails here rather than at the
-    // first heartbeat.
+    // first API call.
     let me: serde_json::Value = api
         .get("/api/me")
         .await
@@ -397,14 +397,6 @@ async fn run_daemon(paths: &Paths, server: &str) -> Result<()> {
     let server_url = config.server_url.clone().unwrap_or_else(|| server.to_string());
     let token = config.session_token.clone();
 
-    // Reported on every heartbeat so the control plane can tell "daemon is up" from
-    // "daemon still serves this", and never advertise an exposure that has been removed.
-    let serving: Vec<String> = config
-        .resources
-        .iter()
-        .map(|r| r.resource_id.to_string())
-        .collect();
-
     let secret_key = paths.load_or_create_identity()?;
     let daemon = Arc::new(Daemon::bind(secret_key, config).await?);
 
@@ -421,32 +413,25 @@ async fn run_daemon(paths: &Paths, server: &str) -> Result<()> {
     println!("  endpoint {endpoint_id}");
     println!("  relay    {relay}");
 
-    // Heartbeat loop: presence in the UI, and the address browsers are handed.
+    // Told to the control plane once, not on a timer.
+    //
+    // The endpoint id is the public half of the key in DEVSITE_HOME/identity, so
+    // it is the same on every run and there is nothing to refresh. The relay
+    // above is printed for the operator and deliberately not uploaded: the
+    // endpoint publishes its own address through iroh's address lookup, and
+    // viewers resolve it from there. The control plane holds permissions; it is
+    // not a directory service.
     let api = ControlPlane::new(&server_url, token);
-    let heartbeat = tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(15));
-        loop {
-            ticker.tick().await;
-            if let Err(err) = api
-                .post_empty(
-                    "/api/daemon/heartbeat",
-                    &serde_json::json!({
-                        "endpoint_id": endpoint_id,
-                        "relay_url": relay,
-                        "serving": serving,
-                    }),
-                )
-                .await
-            {
-                tracing::warn!("heartbeat failed: {err:#}");
-            }
-        }
-    });
+    api.put_empty(
+        "/api/daemon",
+        &serde_json::json!({ "endpoint_id": endpoint_id }),
+    )
+    .await
+    .context("registering this daemon with the control plane")?;
 
     tokio::select! {
         result = Arc::clone(&daemon).serve() => result?,
         _ = tokio::signal::ctrl_c() => println!("\nshutting down"),
     }
-    heartbeat.abort();
     Ok(())
 }
