@@ -169,12 +169,45 @@ fn static_assets(web_root: &std::path::Path, index: &std::path::Path) -> axum::r
 ///
 /// Read per request rather than cached so editing the page during development does not
 /// need a server restart.
+///
+/// The `no-cache` is load-bearing and has to be set here rather than by a layer.
+/// `Router::layer` only wraps routes registered before it, so these two sit
+/// between the API's `no-store` layer and the static fallback's own headers, and
+/// inherit neither. A shell with no directives and no validator is one a browser
+/// may cache heuristically — and this shell names the stylesheet and the script
+/// for the build that produced it, so a stale copy pins a visitor to assets that
+/// a later deploy has renamed or deleted. `/` never had the problem; `/@handle`
+/// silently did.
 fn serve_index(path: PathBuf) -> impl Fn() -> std::future::Ready<Response> + Clone {
     move || {
         let body = std::fs::read_to_string(&path).unwrap_or_else(|_| {
             "<!doctype html><p>web/index.html is missing.".to_string()
         });
-        std::future::ready(Html(body).into_response())
+        let mut response = Html(body).into_response();
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+        std::future::ready(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_spa_shell_is_never_cached_without_revalidating() {
+        let index = std::env::temp_dir().join(format!("devsite-index-{}.html", std::process::id()));
+        std::fs::write(&index, "<!doctype html><title>x</title>").unwrap();
+
+        let response = serve_index(index.clone())().into_inner();
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache",
+            "a cached shell pins a browser to assets a later deploy may have removed"
+        );
+
+        std::fs::remove_file(&index).ok();
     }
 }
 
