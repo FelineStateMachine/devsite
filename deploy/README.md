@@ -27,7 +27,13 @@ when it is not, which is what keeps local development unchanged.
 
 ```bash
 fly apps create devsite
-fly volumes create devsite_data --region sjc --size 1
+
+# --yes answers the "every volume is pinned to one physical host, make two"
+# warning, which cannot prompt without a terminal. One volume is the intended
+# shape here: a second would be a second SQLite file on a second machine, both
+# taking writes and neither aware of the other. Redundancy needs LiteFS, not
+# another volume.
+fly volumes create devsite_data --region sjc --size 1 --yes
 
 # 32 random bytes as 64 hex characters. Generate it here, keep a copy somewhere
 # you would still have after losing this laptop, and never commit it.
@@ -45,9 +51,10 @@ at boot, and `devsite status` prints what the daemon expects.
 
 ### The hostname
 
+The first deploy provisions a shared v4 and a dedicated v6 by itself, so there is usually
+nothing to allocate:
+
 ```bash
-fly ips allocate-v4 --shared
-fly ips allocate-v6
 fly ips list                      # the addresses to point DNS at
 ```
 
