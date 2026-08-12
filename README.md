@@ -5,11 +5,9 @@ Services stay on the machines that own them. An approved user maps a service ont
 loopback port with the `devsite` CLI.
 
 The control plane handles identity, profiles, sharing, and short-lived capabilities. It
-never carries service traffic. Hosts make outbound Iroh connections, so there is no public
-listener or inbound port to configure.
-
-Version 0.2.0 replaces the early single-page HTTP fetch experiment. Services are
-protocol-agnostic TCP byte streams; they are not assumed to be websites.
+never carries service traffic. Iroh establishes direct or relayed connectivity between
+devices, so there is no public application listener or inbound TCP port to configure.
+Services are protocol-agnostic TCP byte streams; they are not assumed to be websites.
 
 ## Install
 
@@ -40,8 +38,8 @@ devsite service host 5432 --name postgres
 devsite daemon run
 ```
 
-Approve a share on the dashboard, open the service, and choose **Get ticket**. On the
-viewer machine:
+Accept a share on the dashboard, open its profile entry, and choose **Get ticket**. On the
+connecting machine:
 
 ```bash
 devsite connect dst_...
@@ -52,7 +50,7 @@ devsite connect dst_...
 ## Shape
 
 ```text
-viewer application
+local application
       │ TCP to 127.0.0.1:ephemeral
       ▼
 devsite connect
@@ -97,8 +95,8 @@ Sharing remains per service. A recipient must approve the invitation on their da
 devsite service host 6379 --name redis --folder databases --share @bob
 ```
 
-A permitted viewer opens the service on dev.site, clicks **Get ticket**, and passes the
-single-use ticket to the CLI. Viewer machines do not need a saved login:
+An approved user opens the service's profile entry on dev.site, clicks **Get ticket**, and
+passes the single-use ticket to the CLI. The connecting machine does not need a saved login:
 
 ```bash
 devsite connect dst_...
@@ -213,9 +211,9 @@ mutex. `fly.toml` and `Dockerfile` describe it:
 fly deploy
 ```
 
-The traffic path scales independently because it does not pass through Fly. Iroh relays
-carry end-to-end encrypted QUIC between clients and daemons; the control plane only signs
-authorization metadata.
+The traffic path scales independently because it does not pass through Fly. Iroh carries
+end-to-end encrypted QUIC directly when possible and through a relay when necessary; the
+control plane only signs authorization metadata.
 
 The two durable identities are `DEVSITE_PUBLIC_ORIGIN`, which Shoo uses when deriving
 accounts, and `DEVSITE_SIGNING_KEY`, whose public half every daemon pins at login. Changing
@@ -226,7 +224,7 @@ either is intentionally disruptive.
 | Path | Responsibility |
 | --- | --- |
 | `crates/devsite-proto` | Opaque ids, signed capabilities, and the TCP stream handshake. |
-| `crates/devsite-client` | Native Iroh viewer endpoint and authorized service streams. |
+| `crates/devsite-client` | Native Iroh client endpoint and authorized service streams. |
 | `crates/devsite-daemon` | Capability verification and fixed-target TCP forwarding. |
 | `crates/devsite-cli` | Login, links, service hosting/connect, themes, and daemon lifecycle. |
 | `crates/devsite-server` | Axum/SQLite control plane and capability issuance. |
@@ -237,8 +235,9 @@ either is intentionally disruptive.
 - A peer supplies only a signed capability. It never supplies the daemon's target address.
 - `devsite service host PORT` always stores `127.0.0.1:PORT`; port zero is rejected.
 - `devsite connect` listens only on a loopback address.
-- Browser-minted tickets are short-lived, stored only as hashes, and consumed once. A
-  successful redemption becomes a client-key-bound tunnel session kept only in CLI memory.
+- Browser-minted tickets are short-lived, stored only as hashes, and consumed once.
+  Redemption creates a client-key-bound session; its raw credential exists only in CLI
+  memory, while the control plane stores its hash until expiry or disconnect.
 - Capabilities are bound to the authenticated Iroh client endpoint and cannot be replayed
   by another endpoint.
 - Each capability opens one stream and its nonce is consumed once.

@@ -1,8 +1,8 @@
-//! The daemon: an Iroh endpoint that proxies *authorized* requests to local services.
+//! The daemon: an Iroh endpoint that forwards authorized streams to fixed local services.
 //!
-//! It has no inbound port. It reaches the world through a relay, and it decides for itself
-//! whether to honour a request by verifying a capability signed by the control plane —
-//! the control plane never touches this traffic.
+//! It exposes no application TCP port. Iroh establishes direct or relayed connectivity,
+//! and the daemon decides for itself whether to honour a request by verifying a capability
+//! signed by the control plane — the control plane never touches this traffic.
 
 pub mod config;
 pub mod verify;
@@ -39,7 +39,7 @@ pub struct Daemon {
 }
 
 impl Daemon {
-    /// Bind the endpoint and wait until a relay will carry traffic for us.
+    /// Bind the endpoint and wait until Iroh has established network connectivity.
     ///
     /// Fails if no control-plane key has been pinned: a daemon that cannot verify
     /// capabilities must refuse to start rather than run in some permissive mode.

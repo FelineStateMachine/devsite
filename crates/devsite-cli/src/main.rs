@@ -4,7 +4,7 @@ mod client;
 
 use anyhow::{bail, Context, Result};
 use clap::{error::ErrorKind, Parser, Subcommand};
-use devsite_client::{ServiceStream, ViewerEndpoint};
+use devsite_client::{ClientEndpoint, ServiceStream};
 use devsite_daemon::config::{DaemonConfig, HostedService, Paths, Visibility};
 use devsite_daemon::Daemon;
 use devsite_proto::SignedCapability;
@@ -43,9 +43,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Store a session token from the website and pin the control plane's signing key.
+    /// Store a revocable machine credential and pin the control plane's signing key.
     Login {
-        /// Session token shown by the website after signing in.
+        /// Machine credential created on the signed-in dashboard.
         token: Option<String>,
     },
     /// Manage ordinary external links.
@@ -807,14 +807,14 @@ async fn connect(server: &str, ticket: &str, listen: SocketAddr, output: Output)
     if !listen.ip().is_loopback() {
         bail!("--listen must be a loopback address; refusing to publish the tunnel on the LAN");
     }
-    let viewer = Arc::new(ViewerEndpoint::create().await?);
+    let client = Arc::new(ClientEndpoint::create().await?);
     let bootstrap = ControlPlane::new(server, None);
     let redeemed: RedeemTicketResponse = bootstrap
         .post(
             "/api/tickets/redeem",
             &serde_json::json!({
                 "ticket": ticket,
-                "client_endpoint_id": viewer.endpoint_id().to_string(),
+                "client_endpoint_id": client.endpoint_id().to_string(),
             }),
         )
         .await
@@ -859,14 +859,14 @@ async fn connect(server: &str, ticket: &str, listen: SocketAddr, output: Output)
                 if let Err(err) = api.delete("/api/tunnel/session").await {
                     tracing::warn!("could not revoke tunnel session during shutdown: {err:#}");
                 }
-                viewer.close().await;
+                client.close().await;
                 return Ok(());
             }
         };
         let api = Arc::clone(&api);
-        let viewer = Arc::clone(&viewer);
+        let client = Arc::clone(&client);
         tokio::spawn(async move {
-            if let Err(err) = forward_connection(&api, &viewer, local).await {
+            if let Err(err) = forward_connection(&api, &client, local).await {
                 tracing::warn!(%peer, "service connection failed: {err:#}");
             }
         });
@@ -875,7 +875,7 @@ async fn connect(server: &str, ticket: &str, listen: SocketAddr, output: Output)
 
 async fn forward_connection(
     api: &ControlPlane,
-    viewer: &ViewerEndpoint,
+    client: &ClientEndpoint,
     local: TcpStream,
 ) -> Result<()> {
     let grant: CapabilityResponse = api
@@ -890,7 +890,7 @@ async fn forward_connection(
         .daemon_endpoint_id
         .parse()
         .context("the server returned an invalid daemon endpoint")?;
-    let ServiceStream { mut send, mut recv } = viewer.connect(daemon, capability).await?;
+    let ServiceStream { mut send, mut recv } = client.connect(daemon, capability).await?;
     let (mut local_read, mut local_write) = local.into_split();
 
     let local_to_service = async {
@@ -1266,7 +1266,7 @@ async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
     // it is the same on every run and there is nothing to refresh. The relay
     // above is printed for the operator and deliberately not uploaded: the
     // endpoint publishes its own address through iroh's address lookup, and
-    // viewers resolve it from there. The control plane holds permissions; it is
+    // clients resolve it from there. The control plane holds permissions; it is
     // not a directory service.
     let api = ControlPlane::new(&server_url, token);
     api.put_empty(

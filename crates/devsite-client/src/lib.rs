@@ -1,4 +1,4 @@
-//! The viewer side of the dev.site data plane.
+//! The connecting-client side of the dev.site data plane.
 //!
 //! Each accepted local TCP connection becomes one authenticated Iroh bidirectional stream.
 
@@ -52,9 +52,9 @@ pub struct ServiceStream {
     pub recv: iroh::endpoint::RecvStream,
 }
 
-/// An ephemeral viewer endpoint. A capability is bound to this key and therefore cannot
+/// An ephemeral client endpoint. A capability is bound to this key and therefore cannot
 /// be redeemed by another devsite client.
-pub struct ViewerEndpoint {
+pub struct ClientEndpoint {
     endpoint: Endpoint,
     /// One live connection per daemon, reused across service streams.
     ///
@@ -65,14 +65,13 @@ pub struct ViewerEndpoint {
     connections: Mutex<HashMap<EndpointId, Connection>>,
 }
 
-impl ViewerEndpoint {
-    /// Bind a new endpoint with a freshly generated key and wait until a relay has
-    /// accepted us.
+impl ClientEndpoint {
+    /// Bind a new endpoint with a freshly generated key and wait until it is online.
     pub async fn create() -> Result<Self> {
         let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
             .bind()
             .await
-            .context("binding viewer endpoint")?;
+            .context("binding client endpoint")?;
         endpoint.online().await;
         Ok(Self {
             endpoint,
@@ -80,7 +79,7 @@ impl ViewerEndpoint {
         })
     }
 
-    /// This viewer's public key. The control plane binds capabilities to it, and the
+    /// This client's public key. The control plane binds capabilities to it, and the
     /// daemon checks that binding against the authenticated peer of the connection.
     pub fn endpoint_id(&self) -> EndpointId {
         self.endpoint.id()
@@ -96,8 +95,8 @@ impl ViewerEndpoint {
     /// `daemon` is normally a bare [`EndpointId`]: the daemon publishes its own
     /// address through iroh's address lookup, and the client resolves it. Nothing has to
     /// tell us where it is. Callers that already know an
-    /// address — the tests, which want a relay pinned rather than a lookup — can
-    /// pass a fuller [`EndpointAddr`].
+    /// address — such as tests that avoid address lookup — can pass a fuller
+    /// [`EndpointAddr`].
     ///
     /// The capability must have been issued for this endpoint's key; the daemon checks
     /// that binding against the connection and will refuse otherwise.

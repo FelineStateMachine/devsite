@@ -69,7 +69,7 @@ structure, so changes here and changes to the whitelist belong in the same commi
           <small class="state"><span class="host"><span>klot.ski&nbsp;</span></span>↗</small>
         </li>
         <!-- reached through its owner's daemon, so it is a button that opens
-             connection instructions here. -->
+             the browser's ticket-minting prompt here. -->
         <li class="entry" data-kind="service" data-visibility="private">
           <button class="outline">Hermes</button>
           <small class="state">private</small>
@@ -87,7 +87,7 @@ structure, so changes here and changes to the whitelist belong in the same commi
     </article>
   </main>
 
-  <dialog id="viewer">…a Get ticket action, then the devsite connect command…</dialog>
+  <dialog id="service-ticket-dialog">…Get ticket, then devsite connect…</dialog>
 </body>
 ```
 
@@ -126,7 +126,7 @@ to create and nothing to delete, so a profile can never be left holding an empty
 one, and renaming a folder is retagging what is in it.
 
 That falls out of the rendering too. The set of folders is derived from the
-entries the viewer is allowed to see, so a folder holding only private sites does
+entries the visitor is allowed to see, so a folder holding only private sites does
 not appear to a stranger as an empty fold — it is never built at all.
 
 Folds are semantic `<details>` elements. They are open by default for profiles
@@ -136,13 +136,13 @@ the reader controls the ordinary open state. Pico draws the marker and handles
 the interaction; `.folder > summary` is the label.
 
 `--devsite-folder-order` names folders that should appear first. A name not
-visible to the current viewer is ignored; visible folders omitted from the list
+visible to the current visitor is ignored; visible folders omitted from the list
 retain their first-appearance order. Folder names use JSON-style quoted strings,
 the same non-control Unicode accepted by resource folders, with the same
 40-scalar limit. Quotes and backslashes use JSON escapes.
 
 `--pico-ins-color` and `--pico-del-color` are still in the whitelist, and are
-what the viewer's success and failure messages are drawn with.
+what the page's success and failure messages are drawn with.
 
 ## What profile presentation may set
 
@@ -169,11 +169,11 @@ stored, and left to do nothing.
 | | `--pico-font-weight` | `400` or `700` |
 | | `--pico-text-decoration` | `none` or `underline` |
 
-`--devsite-scheme` is the one key that is not a Pico variable. It sets
+The `--devsite-*` keys are not Pico variables. `--devsite-scheme` sets
 `data-theme` on the page, which is how Pico chooses between its own light and
-dark palettes; the rest of the theme then adjusts that starting point. `auto`
-leaves `data-theme` unset and follows the viewer's system preference. Explicit
-`light` or `dark` forces that scheme.
+dark palettes; the folder-layout keys are consumed as data while rendering the
+semantic folds. `auto` leaves `data-theme` unset and follows the visitor's system
+preference. Explicit `light` or `dark` forces that scheme.
 
 ### Value grammars
 
@@ -184,10 +184,10 @@ leaves `data-theme` unset and follows the viewer's system preference. Explicit
 | length | a non-negative number with `px`, `rem`, `em`, `ch`, `ex`, `vw`, `vh`, `vmin`, `vmax` or `%`, or bare `0` |
 | number | a non-negative unitless number |
 
-`var()`, `calc()` and `url()` are refused everywhere. Every accepted value is
-drawn from the alphabet `[0-9a-z#%.,/()+- ]`, so it cannot carry `<`, `"` or `}`
-— the rendered rule is safe to inline in a `<style>` element as a property of the
-grammar, not of an escaping step someone has to remember.
+`var()`, `calc()` and `url()` are refused from CSS values. Every accepted Pico
+value is drawn from the alphabet `[0-9a-z#%.,/()+- ]`, so it cannot carry `<`,
+`"` or `}`. Folder names instead use the bounded JSON-string grammar and never
+enter the generated `<style>` rule.
 
 `light-dark()` uses its first colour in light mode and its second in dark mode.
 Either side may use any supported colour form, including a functional colour:
@@ -198,13 +198,13 @@ Either side may use any supported colour form, including a functional colour:
 --pico-background-color: light-dark(rgb(250 248 255), rgb(24 18 32));
 ```
 
-With `auto`, the pair follows the viewer's system preference. Setting
+With `auto`, the pair follows the visitor's system preference. Setting
 `--devsite-scheme: light` always selects the first colour; setting it to `dark`
 always selects the second. The parser understands only this one level of
 nesting: another `light-dark()`, `var()`, `calc()`, `url()`, or any other
 function inside the pair is refused.
 
-## What a theme cannot do
+## What profile presentation cannot do
 
 Refused outright, with a message naming the reason:
 
@@ -221,11 +221,10 @@ use its presentation to disguise itself as another part of the site.
 
 ## Setting one
 
-From the CLI, and only from the CLI. The website is where a profile is read, not
-where it is written — links, hosted services, sharing and themes are all set with
-`devsite`, and a theme is no more a browser concern than a hosted service is. The one
-exception is claiming a handle, which has to happen in the browser because that
-is where signing in finishes.
+From the CLI, and only from the CLI. The website reads profiles, manages account
+controls, approves shares, and mints service tickets; links, hosted services,
+sharing targets, themes, and folder layout are set with `devsite`. Claiming a
+handle remains in the browser because that is where signing in finishes.
 
 ```bash
 devsite theme properties          # what you may set

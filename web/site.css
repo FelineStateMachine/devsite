@@ -231,7 +231,7 @@ details:not(.dropdown)[open] > summary::after {
   }
 }
 
-/* -- the viewer ------------------------------------------------------------ */
+/* -- CLI commands and service tickets -------------------------------------- */
 
 .secret-command {
   display: flex;

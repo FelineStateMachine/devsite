@@ -3,7 +3,7 @@
 //! These run the same `devsite-client` code the CLI runs. Capabilities are minted directly
 //! by a test issuer rather than by the
 //! control plane, which keeps the tests focused on what the *daemon* enforces — the
-//! control plane's own "may this viewer have a capability at all" rules are covered by the
+//! control plane's own "may this account have a capability at all" rules are covered by the
 //! policy tests in devsite-server.
 //!
 //! Negative cases assert `ConnectError::Denied` specifically, never merely "an error". A
@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use devsite_client::{ConnectError, ServiceStream, ViewerEndpoint};
+use devsite_client::{ClientEndpoint, ConnectError, ServiceStream};
 use devsite_daemon::config::{DaemonConfig, HostedService, Visibility};
 use devsite_daemon::Daemon;
 use devsite_proto::capability::{
@@ -58,10 +58,10 @@ struct Harness {
     hermes: ResourceId,
     agent: ResourceId,
     unknown: ResourceId,
-    /// The legitimate viewer.
-    viewer: ViewerEndpoint,
-    /// A second viewer, for anything about one client using another's grant.
-    mallory: ViewerEndpoint,
+    /// The legitimate client.
+    client: ClientEndpoint,
+    /// A second client, for anything about one client using another's grant.
+    mallory: ClientEndpoint,
 }
 
 impl Harness {
@@ -104,7 +104,7 @@ impl Harness {
 
         tokio::spawn(Arc::clone(&daemon).serve());
 
-        let (viewer, mallory) = tokio::join!(ViewerEndpoint::create(), ViewerEndpoint::create());
+        let (client, mallory) = tokio::join!(ClientEndpoint::create(), ClientEndpoint::create());
 
         Self {
             daemon,
@@ -114,7 +114,7 @@ impl Harness {
             hermes,
             agent,
             unknown: ResourceId::generate(),
-            viewer: viewer.unwrap(),
+            client: client.unwrap(),
             mallory: mallory.unwrap(),
         }
     }
@@ -152,14 +152,14 @@ impl Harness {
         .unwrap()
     }
 
-    /// An ordinary, valid capability for `resource`, bound to the legitimate viewer.
+    /// An ordinary, valid capability for `resource`, bound to the legitimate client.
     fn valid(&self, resource: ResourceId) -> SignedCapability {
         let now = self.now();
         self.mint(
             &self.signing_key,
             resource,
             self.daemon_key,
-            *self.viewer.endpoint_id().as_bytes(),
+            *self.client.endpoint_id().as_bytes(),
             now,
             now + DEFAULT_LIFETIME_SECS,
         )
@@ -167,12 +167,12 @@ impl Harness {
 
     async fn connect_as(
         &self,
-        who: &ViewerEndpoint,
+        who: &ClientEndpoint,
         capability: SignedCapability,
         input: &str,
     ) -> Result<String, ConnectError> {
         // The relay is pinned rather than looked up. In the browser a bare
-        // endpoint id is enough — the daemon publishes its address and the viewer
+        // endpoint id is enough — the daemon publishes its address and the client
         // resolves it — but that path depends on a third-party lookup service,
         // and these tests are about what the daemon enforces, not about how it
         // was found. Handing the address over directly keeps a denial a denial
@@ -193,7 +193,7 @@ impl Harness {
     }
 
     async fn connect(&self, capability: SignedCapability) -> Result<String, ConnectError> {
-        self.connect_as(&self.viewer, capability, "hello").await
+        self.connect_as(&self.client, capability, "hello").await
     }
 
     /// Assert the daemon reached a verdict and refused, rather than being unreachable.
@@ -244,7 +244,7 @@ async fn each_resource_maps_to_its_own_service(h: &Harness) {
 
 async fn capability_bound_to_another_client_is_refused(h: &Harness) {
     // The core claim: a leaked or forwarded capability is useless without the private key
-    // it was bound to. Mallory presents the viewer's capability from her own endpoint.
+    // it was bound to. Mallory presents the client's capability from her own endpoint.
     let stolen = h.valid(h.agent);
     match h.connect_as(&h.mallory, stolen, "stolen").await {
         Err(ConnectError::Denied) => {}
@@ -256,7 +256,7 @@ async fn capability_bound_to_another_client_is_refused(h: &Harness) {
 
 async fn capabilities_that_fail_verification_are_refused(h: &Harness) {
     let now = h.now();
-    let mine = *h.viewer.endpoint_id().as_bytes();
+    let mine = *h.client.endpoint_id().as_bytes();
 
     // Signed by someone who is not the control plane.
     h.assert_denied(
@@ -315,7 +315,7 @@ async fn denials_reveal_nothing_about_why(h: &Harness) {
     // A peer must not be able to tell "no such resource" from "not signed correctly" —
     // that difference is enough to enumerate a profile's private services.
     let now = h.now();
-    let mine = *h.viewer.endpoint_id().as_bytes();
+    let mine = *h.client.endpoint_id().as_bytes();
 
     let unknown = h.connect(h.valid(h.unknown)).await.unwrap_err();
     let forged = h

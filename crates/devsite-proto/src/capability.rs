@@ -1,7 +1,7 @@
 //! Short-lived, signed grants issued by the control plane and verified by a daemon.
 //!
 //! A capability is the only thing that persuades a daemon to talk to a local service. It
-//! is deliberately narrow: one viewer, one resource, one daemon, one client key, one
+//! is deliberately narrow: one account, one resource, one daemon, one client key, one
 //! permission, a few minutes.
 //!
 //! Public keys are carried as raw bytes rather than iroh types so this crate stays free of
@@ -17,7 +17,7 @@ use crate::{AccountId, ResourceId};
 pub type KeyBytes = [u8; 32];
 
 /// How long a freshly issued capability remains valid. Short enough that a leaked token is
-/// of little use, long enough to survive a slow relay connection.
+/// of little use, long enough to survive slow network setup.
 pub const DEFAULT_LIFETIME_SECS: u64 = 180;
 
 /// Tolerance for clock skew between the control plane and a daemon.

@@ -233,13 +233,13 @@ function renderSession() {
 /// Everything on a profile is a site. The only difference between them is how you
 /// get there: a link is reached at its own address, so it is an anchor and takes
 /// you away; a service is reached through its owner's daemon, so it is a button
-/// and opens here. That is the whole of the distinction, and the row says it with
-/// an arrow rather than by sorting the page into kinds.
+/// that opens its ticket prompt here. That is the whole of the distinction, and
+/// the row says it with an arrow rather than by sorting the page into kinds.
 ///
 /// A service carries no reachability state. Nothing on this page knows whether
 /// the far end is running — the control plane is not told, and the only thing
-/// that could answer is a connection attempt. So the row makes no claim, and
-/// clicking it finds out.
+/// that could answer is the CLI's later connection attempt. The browser only
+/// mints a ticket, so the row makes no reachability claim.
 function siteRow(item, { onClick, from } = {}) {
   const li = document.createElement('li');
   li.className = 'entry';
@@ -291,7 +291,7 @@ function entryList(items, options = {}) {
     list.append(siteRow(item, {
       ...options,
       from: item.owner_handle,
-      onClick: () => openService(item),
+      onClick: () => showServiceTicketDialog(item),
     }));
   }
   return list;
@@ -301,7 +301,7 @@ function entryList(items, options = {}) {
 ///
 /// Derived from the entries rather than stored anywhere: a folder is a name
 /// repeated across the sites that share it, so this is the only place the set of
-/// them exists. A folder that a viewer may see nothing inside does not appear at
+/// them exists. A folder that a visitor may see nothing inside does not appear at
 /// all, because it never gets built.
 function foldersOf(entries) {
   const folders = new Map();
@@ -340,7 +340,7 @@ function profileLayout(declarations = []) {
 }
 
 /// Named folders come first in the requested order. A name that does not exist
-/// for this viewer is ignored, and unlisted visible folders retain the order in
+/// for this visitor is ignored, and unlisted visible folders retain the order in
 /// which they first appeared.
 function orderedFolders(folders, order) {
   const result = [];
@@ -408,20 +408,20 @@ function renderProfile(profile) {
   main.append(article);
 }
 
-// -- opening a service ---------------------------------------------------------
+// -- service tickets -----------------------------------------------------------
 
 /// Pico's modal convention: the `open` attribute on the dialog, and a lock class
 /// on the document while it is up.
-function openViewer() {
+function openServiceTicketDialog() {
   document.documentElement.classList.add('modal-is-open', 'modal-is-opening');
-  $('viewer').setAttribute('open', '');
+  $('service-ticket-dialog').setAttribute('open', '');
   setTimeout(() => document.documentElement.classList.remove('modal-is-opening'), 400);
 }
 
-function closeViewer() {
+function closeServiceTicketDialog() {
   document.documentElement.classList.remove('modal-is-open', 'modal-is-opening');
-  $('viewer').removeAttribute('open');
-  $('viewer-body').replaceChildren();
+  $('service-ticket-dialog').removeAttribute('open');
+  $('service-ticket-body').replaceChildren();
 }
 
 function maskedSecret(secret) {
@@ -465,7 +465,7 @@ function renderSecretCommand(container, verb, secret) {
   container.replaceChildren(group, status);
 }
 
-function renderTicketPrompt(resourceId, container, status) {
+function renderServiceTicketPrompt(resourceId, container, status) {
   container.innerHTML = `
     <p>This is a private TCP service. Mint a short-lived ticket, then connect it to a loopback port with the CLI.</p>
     <button type="button" class="get-ticket">Get ticket</button>`;
@@ -491,12 +491,16 @@ function renderTicketPrompt(resourceId, container, status) {
   });
 }
 
-function openService(item) {
-  $('viewer-title').textContent = item.owner_handle
+function showServiceTicketDialog(item) {
+  $('service-ticket-title').textContent = item.owner_handle
     ? `${item.name} — @${item.owner_handle}`
     : item.name;
-  renderTicketPrompt(item.resource_id, $('viewer-body'), $('viewer-status'));
-  openViewer();
+  renderServiceTicketPrompt(
+    item.resource_id,
+    $('service-ticket-body'),
+    $('service-ticket-status'),
+  );
+  openServiceTicketDialog();
 }
 
 // -- setup views ---------------------------------------------------------------
@@ -1014,7 +1018,7 @@ async function route() {
         <p><small>The CLI opens a loopback port and carries its byte stream through Iroh.</small></p>
       </article>`;
     if (me) {
-      renderTicketPrompt(serviceMatch[1], $('service-connect'), $('service-status'));
+      renderServiceTicketPrompt(serviceMatch[1], $('service-connect'), $('service-status'));
     } else {
       $('service-connect').innerHTML = '<p>Sign in from the header to request access.</p>';
     }
@@ -1041,9 +1045,13 @@ async function showProfile(handle) {
   }
 }
 
-$('viewer-close').addEventListener('click', closeViewer);
-$('viewer').addEventListener('click', (e) => { if (e.target === $('viewer')) closeViewer(); });
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeViewer(); });
+$('service-ticket-close').addEventListener('click', closeServiceTicketDialog);
+$('service-ticket-dialog').addEventListener('click', (event) => {
+  if (event.target === $('service-ticket-dialog')) closeServiceTicketDialog();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeServiceTicketDialog();
+});
 
 updateLogoContrast();
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () =>

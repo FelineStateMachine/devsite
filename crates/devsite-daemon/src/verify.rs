@@ -200,7 +200,7 @@ mod tests {
     #[test]
     fn a_denied_request_does_not_consume_the_nonce() {
         // If a wrong-peer attempt burned the nonce, an attacker who merely observed a
-        // capability could deny the legitimate viewer their one use of it.
+        // capability could deny the legitimate client its one use of it.
         let key = SigningKey::from_bytes(&[9; 32]);
         let mut replay = ReplayGuard::default();
         let claims = claims_with([1; 16], resource());

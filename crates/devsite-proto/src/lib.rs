@@ -9,6 +9,5 @@ pub use capability::{CapabilityClaims, CapabilityError, Permission, SignedCapabi
 pub use id::{AccountId, IdParseError, ResourceId};
 pub use wire::{ConnectRequest, ErrorCode, Request, Response};
 
-/// ALPN for the dev.site stream protocol. Version 1 replaced the early one-document
-/// HTTP fetch with an authorized bidirectional TCP stream.
+/// ALPN for the authorized bidirectional TCP stream protocol.
 pub const ALPN: &[u8] = b"devsite/tcp/1";
