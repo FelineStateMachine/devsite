@@ -111,6 +111,7 @@ jobs:
           Remove-Item -Recurse "dist/$name"
 
       - name: Attest archive provenance
+        if: github.event.repository.private == false
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: dist/*
@@ -149,6 +150,7 @@ jobs:
           sha256sum --check SHA256SUMS
 
       - name: Attest checksum manifest
+        if: github.event.repository.private == false
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: dist/SHA256SUMS
