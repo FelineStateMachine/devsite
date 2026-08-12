@@ -22,3 +22,4 @@ iroh = "1"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 data-encoding.workspace = true
+semver = "1"

@@ -831,6 +831,7 @@ dependencies = [
  "devsite-proto",
  "iroh",
  "reqwest 0.12.28",
+ "semver",
  "serde",
  "serde_json",
  "tokio",

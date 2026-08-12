@@ -10,6 +10,7 @@ use devsite_daemon::Daemon;
 use devsite_proto::{AccountId, ResourceId, SignedCapability};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::io::IsTerminal;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -501,6 +502,25 @@ fn enrolled_server(config: &DaemonConfig) -> Result<&str> {
         .context("this credential is not bound to a control-plane origin — log in again")
 }
 
+fn validate_cli_version(minimum: &str, current: &str) -> Result<()> {
+    let minimum = semver::Version::parse(minimum)
+        .context("server reported an invalid minimum CLI version")?;
+    let current =
+        semver::Version::parse(current).context("this CLI has invalid version metadata")?;
+    if current < minimum {
+        bail!("server requires CLI {minimum} or newer, but this is CLI {current}");
+    }
+    Ok(())
+}
+
+fn green_check() -> &'static str {
+    if std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() {
+        "\x1b[32m✓\x1b[0m"
+    } else {
+        "✓"
+    }
+}
+
 async fn login(paths: &Paths, server: &str, token: Option<String>, output: Output) -> Result<()> {
     let ticket = match token {
         Some(ticket) => ticket,
@@ -527,6 +547,8 @@ async fn login(paths: &Paths, server: &str, token: Option<String>, output: Outpu
             server_config.api_version
         );
     }
+    let cli_version = env!("CARGO_PKG_VERSION");
+    validate_cli_version(&server_config.minimum_cli_version, cli_version)?;
     let pubkey: PubKeyResponse = bootstrap.get("/api/pubkey").await?;
     let identity = paths.load_or_create_identity()?;
     let endpoint_id = identity.public().to_string();
@@ -570,15 +592,19 @@ async fn login(paths: &Paths, server: &str, token: Option<String>, output: Outpu
             serde_json::json!({
                 "handle": handle,
                 "server": server.trim_end_matches('/'),
+                "cli_version": cli_version,
                 "minimum_cli_version": server_config.minimum_cli_version,
+                "cli_compatible": true,
                 "control_plane_key": control_plane_key,
             }),
         );
     } else {
         println!("signed in as {handle}");
         println!(
-            "server requires CLI {} or newer",
-            server_config.minimum_cli_version
+            "{} CLI {} meets server requirement ({} or newer)",
+            green_check(),
+            cli_version,
+            server_config.minimum_cli_version,
         );
         println!("pinned control plane key {control_plane_key}");
     }
@@ -1421,5 +1447,25 @@ async fn reload_config(paths: Paths, daemon: Arc<Daemon>, output: Output) -> Res
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_cli_version;
+
+    #[test]
+    fn cli_version_validation_accepts_equal_or_newer_versions() {
+        assert!(validate_cli_version("0.3.0", "0.3.0").is_ok());
+        assert!(validate_cli_version("0.3.0", "0.4.0").is_ok());
+    }
+
+    #[test]
+    fn cli_version_validation_rejects_older_or_invalid_versions() {
+        assert!(validate_cli_version("0.3.1", "0.3.0")
+            .unwrap_err()
+            .to_string()
+            .contains("server requires CLI 0.3.1 or newer"));
+        assert!(validate_cli_version("not-a-version", "0.3.0").is_err());
     }
 }
