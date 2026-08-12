@@ -28,6 +28,7 @@ pub struct AppState {
     pub issuer: Issuer,
     pub identity_namespace: String,
     pub public_origin: String,
+    pub relay_issuer: devsite_iroh::RelayIssuer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -401,6 +402,7 @@ pub struct RedeemTicketRequest {
 #[derive(Serialize)]
 pub struct RedeemTicketResponse {
     pub session_token: String,
+    pub relay_token: String,
     pub resource_id: String,
     pub name: String,
     pub expires_at: u64,
@@ -1144,7 +1146,15 @@ async fn register_daemon(
     let db = state.db.lock().unwrap();
     db.register_daemon(machine.account.id, &machine.endpoint_id)
         .map_err(ApiError::internal)?;
-    Ok(StatusCode::NO_CONTENT)
+    drop(db);
+
+    let endpoint_key = parse_endpoint_id(&machine.endpoint_id)
+        .ok_or_else(|| ApiError::internal(anyhow::anyhow!("stored endpoint id is invalid")))?;
+    let relay_token = state
+        .relay_issuer
+        .token(&endpoint_key)
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({ "relay_token": relay_token })))
 }
 
 /// Report endpoint identities without implying daemon liveness. Registration is
@@ -1913,6 +1923,10 @@ async fn redeem_connection_ticket(
 
     Ok(Json(RedeemTicketResponse {
         session_token,
+        relay_token: state
+            .relay_issuer
+            .token(&client_key)
+            .map_err(ApiError::internal)?,
         resource_id: resource.id.to_string(),
         name: resource.name,
         expires_at,
@@ -2036,6 +2050,11 @@ async fn tunnel_session_info(
         "resource_id": resource.id.to_string(),
         "name": resource.name,
         "requester_endpoint_id": session.client_endpoint_id,
+        "relay_token": state.relay_issuer.token(
+            &parse_endpoint_id(&session.client_endpoint_id).ok_or_else(||
+                ApiError::internal(anyhow::anyhow!("stored client endpoint id is invalid"))
+            )?
+        ).map_err(ApiError::internal)?,
         "expires_at": session.expires_at,
         "brokered": session.issuer_credential_id.is_some(),
     })))

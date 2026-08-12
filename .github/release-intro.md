@@ -1,38 +1,32 @@
-dev.site v0.5.0 improves the public documentation and homepage guidance for access, tickets,
-keys, and service transport.
+dev.site v0.5.1 moves production Iroh traffic to the managed shared relay tier.
 
 ## highlights
 
-- New concept guides explain tickets, keys and endpoint identities, and the ALPN wire
-  protocol.
-- The homepage shows the delegated access workflow from request through service connection.
-- Command examples use colour to distinguish commands, subcommands, options, values, and
-  ticket values.
-- Documentation now calls the approving human or automated process the granting party.
+- The CLI and daemon use four project relays through an Iroh custom relay map.
+- The control plane keeps the Iroh Services API key in its environment.
+- The control plane gives each client and daemon an endpoint-scoped relay token.
+- Public Iroh relays remain available only to transport integration tests.
 
-## tickets, keys, and protocol
+## deployment
 
-The ticket guide explains each ticket type, its issuer, use count, lifetime, storage, and
-revocation rules.
+Set `IROH_SERVICES_API_SECRET` on the control plane before you release the new CLI.
+The server must return scoped relay tokens to version 0.5.1 clients.
 
-The key guide explains endpoint identity, requester keys, control-plane signing keys, and
-private key storage.
-
-The ALPN guide describes `devsite/tcp/1`, its QUIC handshake, frame format, capability
-checks, and version boundary.
+The relay token grants relay use only. It does not grant access to a dev.site service.
+The existing signed capability checks still control each service connection.
 
 ## identity file migration
 
-Version 0.5.0 continues to move legacy `identity.key` and `identity.pub` files to
+Version 0.5.1 continues to move legacy `identity.key` and `identity.pub` files to
 `devsite-endpoint.key` and `devsite-endpoint.pub`.
 
 The migration checks only the dev.site config directory. It moves a legacy file only when
 the destination file does not exist.
 
-`devsite doctor` now warns that version 0.6.0 removes legacy file support.
+`devsite doctor` warns that version 0.6.0 removes legacy file support.
 
 Before you upgrade to version 0.6.0, run `devsite login` or `devsite daemon run` with
-version 0.5.0 or an earlier version.
+version 0.5.1 or an earlier version.
 
 ## upgrade notes
 

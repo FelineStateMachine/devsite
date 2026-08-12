@@ -94,6 +94,22 @@ impl ClientEndpoint {
         })
     }
 
+    /// Bind an endpoint to the dev.site relay network.
+    pub async fn create_with_relay(
+        secret_key: iroh::SecretKey,
+        relay_token: impl Into<String>,
+    ) -> Result<Self> {
+        let endpoint = Endpoint::builder(devsite_iroh::preset(secret_key, relay_token)?)
+            .bind()
+            .await
+            .context("binding client endpoint")?;
+        endpoint.online().await;
+        Ok(Self {
+            endpoint,
+            connections: Mutex::new(HashMap::new()),
+        })
+    }
+
     /// This client's public key. The control plane binds capabilities to it, and the
     /// daemon checks that binding against the authenticated peer of the connection.
     pub fn endpoint_id(&self) -> EndpointId {

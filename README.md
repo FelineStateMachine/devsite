@@ -244,6 +244,9 @@ control the theme, while `--devsite-folders`, `--devsite-open-folders`, and
 
 Prerequisite: stable Rust.
 
+Set `IROH_SERVICES_API_SECRET` before you start the control plane.
+The control plane uses it to make endpoint-scoped relay tokens.
+
 ```bash
 export DEVSITE_PUBLIC_ORIGIN=http://127.0.0.1:4000
 cargo run -p devsite-server
@@ -294,6 +297,7 @@ the configured issuer, client, and subjects.
 | Path | Responsibility |
 | --- | --- |
 | `crates/devsite-proto` | Opaque ids, signed capabilities, and the TCP stream handshake. |
+| `crates/devsite-iroh` | Shared Iroh Services relay configuration. |
 | `crates/devsite-client` | Native Iroh client endpoint and authorized service streams. |
 | `crates/devsite-daemon` | Capability verification and fixed-target TCP forwarding. |
 | `crates/devsite-cli` | Login, links, service hosting/connect, themes, and daemon lifecycle. |
@@ -310,6 +314,7 @@ the configured issuer, client, and subjects.
   memory, while the control plane stores its hash until expiry or disconnect.
 - Capabilities are bound to the authenticated Iroh client endpoint and cannot be replayed
   by another endpoint.
+- The control plane keeps the Iroh Services API key and gives each endpoint a scoped relay token.
 - Each capability opens one stream and its nonce is consumed once.
 - Unknown resources, invalid signatures, wrong audiences, wrong clients, expiry, and replay
   all produce the same denial.

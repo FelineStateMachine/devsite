@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 devsite-proto.workspace = true
+devsite-iroh.workspace = true
 iroh = { version = "1", default-features = false, features = ["tls-ring"] }
 # Iroh's runtime-neutral timeout keeps connection setup bounded.
 n0-future = "0.3"

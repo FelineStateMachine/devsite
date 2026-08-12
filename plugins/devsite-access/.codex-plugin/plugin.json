@@ -1,6 +1,6 @@
 {
   "name": "devsite-access",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Operate devsite and grant delegated endpoint-bound service access through a portable MCP adapter and skill.",
   "author": {
     "name": "dev.site"

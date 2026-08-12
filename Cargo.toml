@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/devsite-proto",
+    "crates/devsite-iroh",
     "crates/devsite-client",
     "crates/devsite-daemon",
     "crates/devsite-cli",
@@ -9,12 +10,13 @@ members = [
 ]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 edition = "2021"
 license = "Apache-2.0"
 
 [workspace.dependencies]
 devsite-proto = { path = "crates/devsite-proto" }
+devsite-iroh = { path = "crates/devsite-iroh" }
 devsite-client = { path = "crates/devsite-client" }
 
 anyhow = "1"

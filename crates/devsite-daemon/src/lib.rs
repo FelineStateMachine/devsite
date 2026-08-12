@@ -54,10 +54,30 @@ impl Daemon {
     /// Fails if no control-plane key has been pinned: a daemon that cannot verify
     /// capabilities must refuse to start rather than run in some permissive mode.
     pub async fn bind(secret_key: SecretKey, config: DaemonConfig) -> Result<Self> {
+        Self::bind_builder(
+            Endpoint::builder(iroh::endpoint::presets::N0).secret_key(secret_key),
+            config,
+        )
+        .await
+    }
+
+    /// Bind the endpoint to the dev.site relay network.
+    pub async fn bind_with_relay(
+        secret_key: SecretKey,
+        config: DaemonConfig,
+        relay_token: impl Into<String>,
+    ) -> Result<Self> {
+        Self::bind_builder(
+            Endpoint::builder(devsite_iroh::preset(secret_key, relay_token)?),
+            config,
+        )
+        .await
+    }
+
+    async fn bind_builder(builder: iroh::endpoint::Builder, config: DaemonConfig) -> Result<Self> {
         let control_plane_key = config.verifying_key()?;
 
-        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
-            .secret_key(secret_key)
+        let endpoint = builder
             .alpns(vec![ALPN.to_vec()])
             .bind()
             .await

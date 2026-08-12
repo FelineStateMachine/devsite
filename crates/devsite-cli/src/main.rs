@@ -388,6 +388,7 @@ struct CapabilityResponse {
 #[derive(Deserialize)]
 struct RedeemTicketResponse {
     session_token: String,
+    relay_token: String,
     resource_id: String,
     name: String,
     expires_at: u64,
@@ -441,8 +442,14 @@ struct TunnelSessionInfo {
     resource_id: String,
     name: String,
     requester_endpoint_id: String,
+    relay_token: String,
     expires_at: u64,
     brokered: bool,
+}
+
+#[derive(Deserialize)]
+struct RegisterDaemonResponse {
+    relay_token: String,
 }
 
 #[derive(Deserialize)]
@@ -1163,18 +1170,20 @@ async fn connect(server: &str, ticket: &str, listen: SocketAddr, output: Output)
     if !listen.ip().is_loopback() {
         bail!("--listen must be a loopback address; refusing to publish the tunnel on the LAN");
     }
-    let client = Arc::new(ClientEndpoint::create().await?);
+    let secret_key = iroh::SecretKey::generate();
     let bootstrap = ControlPlane::new(server, None);
     let redeemed: RedeemTicketResponse = bootstrap
         .post(
             "/api/tickets/redeem",
             &serde_json::json!({
                 "ticket": ticket,
-                "client_endpoint_id": client.endpoint_id().to_string(),
+                "client_endpoint_id": secret_key.public().to_string(),
             }),
         )
         .await
         .context("redeeming connection ticket")?;
+    let client =
+        Arc::new(ClientEndpoint::create_with_relay(secret_key, redeemed.relay_token).await?);
     let api = Arc::new(ControlPlane::new(server, Some(redeemed.session_token)));
     run_tunnel(
         "connect",
@@ -1460,16 +1469,17 @@ async fn connect_grant(
         .as_slice()
         .try_into()
         .map_err(|_| anyhow::anyhow!("{} is not a 32 byte endpoint key", key_path.display()))?;
-    let client =
-        Arc::new(ClientEndpoint::create_with_secret(iroh::SecretKey::from_bytes(&bytes)).await?);
+    let secret_key = iroh::SecretKey::from_bytes(&bytes);
     let api = Arc::new(ControlPlane::new(server, Some(grant.to_string())));
     let session: TunnelSessionInfo = api
         .get("/api/tunnel/session")
         .await
         .context("validating delegated access grant")?;
-    if session.requester_endpoint_id != client.endpoint_id().to_string() || !session.brokered {
+    if session.requester_endpoint_id != secret_key.public().to_string() || !session.brokered {
         bail!("the grant is not bound to the supplied requester endpoint key");
     }
+    let client =
+        Arc::new(ClientEndpoint::create_with_relay(secret_key, session.relay_token).await?);
     run_tunnel(
         "access.connect",
         server,
@@ -2835,9 +2845,19 @@ async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
 
     let secret_key = paths.load_or_create_identity()?;
     let proof = endpoint_proof(&secret_key);
-    let daemon = Arc::new(Daemon::bind(secret_key, config).await?);
+    let endpoint_id = secret_key.public().to_string();
 
-    let endpoint_id = daemon.endpoint().id().to_string();
+    // The endpoint id is the public half of the key in DEVSITE_HOME/identity, so
+    // it is the same on every run. Register it before the endpoint binds so the
+    // control plane can make its scoped relay token.
+    let api = ControlPlane::new(&server_url, token);
+    let registration: RegisterDaemonResponse = api
+        .put("/api/daemon", &serde_json::json!({ "proof": proof }))
+        .await
+        .context("registering this daemon with the control plane")?;
+    let daemon =
+        Arc::new(Daemon::bind_with_relay(secret_key, config, registration.relay_token).await?);
+
     let relay = daemon
         .endpoint()
         .addr()
@@ -2845,19 +2865,6 @@ async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
         .next()
         .map(|u| u.to_string())
         .context("no relay was assigned; check network connectivity")?;
-
-    // Told to the control plane once, not on a timer.
-    //
-    // The endpoint id is the public half of the key in DEVSITE_HOME/identity, so
-    // it is the same on every run and there is nothing to refresh. The relay
-    // above is printed for the operator and deliberately not uploaded: the
-    // endpoint publishes its own address through iroh's address lookup, and
-    // clients resolve it from there. The control plane holds permissions; it is
-    // not a directory service.
-    let api = ControlPlane::new(&server_url, token);
-    api.put_empty("/api/daemon", &serde_json::json!({ "proof": proof }))
-        .await
-        .context("registering this daemon with the control plane")?;
 
     if output.json {
         output.event(

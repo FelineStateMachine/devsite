@@ -103,6 +103,7 @@ async fn main() -> Result<()> {
 
     let db = Db::open(&config.database)?;
     let issuer = config.issuer()?;
+    let relay_issuer = devsite_iroh::RelayIssuer::from_env()?;
     let oidc = OidcConfig::from_env(&config.public_origin)?;
 
     tracing::info!(
@@ -119,6 +120,7 @@ async fn main() -> Result<()> {
         issuer,
         identity_namespace: oidc.issuer().to_string(),
         public_origin: config.public_origin.clone(),
+        relay_issuer,
     });
 
     let index = config.web_root.join("index.html");
