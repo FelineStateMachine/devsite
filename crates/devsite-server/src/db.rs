@@ -1599,11 +1599,20 @@ mod tests {
         let (db, alice, _) = seeded();
         assert!(db.custom_css(alice.id).unwrap().is_none());
 
-        db.set_custom_css(alice.id, Some("--pico-primary: #7b3fe4;\n"))
-            .unwrap();
+        let declarations = crate::theme::parse(
+            "--devsite-scheme: auto; \
+             --pico-primary: light-dark(rgb(123 63 228), rgb(169 130 255));",
+        )
+        .unwrap();
+        let canonical = crate::theme::to_css(&declarations);
+        db.set_custom_css(alice.id, Some(&canonical)).unwrap();
         assert_eq!(
             db.custom_css(alice.id).unwrap().as_deref(),
-            Some("--pico-primary: #7b3fe4;\n")
+            Some(canonical.as_str())
+        );
+        assert_eq!(
+            crate::theme::to_css(&crate::theme::parse(&canonical).unwrap()),
+            canonical
         );
 
         db.set_custom_css(alice.id, None).unwrap();

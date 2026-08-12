@@ -135,7 +135,8 @@ function applyTheme(handle, declarations = []) {
   root.dataset.profile = scope;
 
   // The one key that is not a Pico variable — it picks which of Pico's own
-  // palettes the profile starts from.
+  // palettes the profile starts from. Pico also sets the root color-scheme,
+  // so CSS light-dark() values follow this choice without a second switcher.
   const scheme = declarations.find((d) => d.property === '--devsite-scheme')?.value;
   if (scheme === 'light' || scheme === 'dark') {
     root.dataset.theme = scheme;

@@ -22,8 +22,9 @@ use serde::Serialize;
 
 /// Longest accepted source, before parsing. A theme is a few dozen short lines.
 pub const MAX_INPUT: usize = 4096;
-/// Longest accepted value. `oklch(62.8% 0.258 29.23)` is 24 characters.
-pub const MAX_VALUE: usize = 64;
+/// Longest accepted value. This leaves room for two functional colours inside
+/// `light-dark()` without changing the overall [`MAX_INPUT`] bound.
+pub const MAX_VALUE: usize = 128;
 
 /// One validated assignment. `property` is borrowed from [`PROPERTIES`], so a
 /// stored declaration cannot name anything outside the table.
@@ -36,7 +37,7 @@ pub struct Declaration {
 /// The grammar a property's value must satisfy.
 enum Kind {
     /// Hex, `rgb()`/`rgba()`/`hsl()`/`hsla()`/`oklch()`, a CSS colour name,
-    /// `transparent` or `currentcolor`.
+    /// `transparent`, `currentcolor`, or exactly two of those in `light-dark()`.
     Color,
     /// A non-negative number with a unit, or bare `0`.
     Length,
@@ -236,7 +237,7 @@ impl Kind {
 
     fn describe(&self) -> String {
         match self {
-            Kind::Color => "a colour, e.g. `#7b3fe4`, `rgb(123 63 228)` or `rebeccapurple`".into(),
+            Kind::Color => "a colour, e.g. `#7b3fe4`, `rgb(123 63 228)`, `rebeccapurple` or `light-dark(#7b3fe4, #a982ff)`".into(),
             Kind::Length => "a length, e.g. `0.5rem`, `12px` or `0`".into(),
             Kind::Number => "a number, e.g. `1.5`".into(),
             Kind::Keyword(allowed) => format!("one of {}", allowed.join(", ")),
@@ -249,6 +250,50 @@ impl Kind {
 fn is_color(value: &str) -> bool {
     let value = value.to_ascii_lowercase();
 
+    if let Some(args) = value
+        .strip_prefix("light-dark(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return split_color_pair(args)
+            .is_some_and(|(light, dark)| is_flat_color(light) && is_flat_color(dark));
+    }
+
+    is_flat_color(&value)
+}
+
+/// Split the arguments of `light-dark()` at its one top-level comma.
+///
+/// Commas inside an existing functional colour belong to that colour. Tracking
+/// their parentheses here permits `rgba(1, 2, 3, 0.5)` on either side while
+/// still rejecting unbalanced input and any third top-level argument.
+fn split_color_pair(args: &str) -> Option<(&str, &str)> {
+    let mut depth = 0_u8;
+    let mut separator = None;
+
+    for (index, character) in args.char_indices() {
+        match character {
+            '(' => depth = depth.checked_add(1)?,
+            ')' => depth = depth.checked_sub(1)?,
+            ',' if depth == 0 && separator.is_some() => return None,
+            ',' if depth == 0 => separator = Some(index),
+            _ => {}
+        }
+    }
+
+    if depth != 0 {
+        return None;
+    }
+
+    let separator = separator?;
+    let light = args[..separator].trim();
+    let dark = args[separator + 1..].trim();
+    (!light.is_empty() && !dark.is_empty()).then_some((light, dark))
+}
+
+/// The original, deliberately flat colour grammar. Keeping it separate makes
+/// `light-dark()` the only supported nesting layer: neither side can introduce
+/// another `light-dark()`, `var()`, `calc()`, `url()`, or arbitrary function.
+fn is_flat_color(value: &str) -> bool {
     if value == "transparent" || value == "currentcolor" {
         return true;
     }
@@ -267,7 +312,7 @@ fn is_color(value: &str) -> bool {
                 .all(|b| b.is_ascii_digit() || b" .,%/+-".contains(&b))
             && args.split([',', ' ', '/']).filter(|a| !a.is_empty()).count() <= 4;
     }
-    NAMED_COLORS.binary_search(&value.as_str()).is_ok()
+    NAMED_COLORS.binary_search(&value).is_ok()
 }
 
 fn is_length(value: &str) -> bool {
@@ -509,6 +554,102 @@ mod tests {
     }
 
     #[test]
+    fn accepts_hex_named_and_functional_color_pairs() {
+        for value in [
+            "light-dark(#7b3fe4, #a982ff)",
+            "light-dark(white, rebeccapurple)",
+            "light-dark(transparent, currentcolor)",
+            "light-dark(rgb(250 248 255), rgb(24 18 32))",
+            "light-dark(rgba(250, 248, 255, 0.9), hsl(267 100% 75%))",
+            "light-dark(oklch(98% 0.02 295), oklch(20% 0.04 295))",
+        ] {
+            assert!(
+                parse(&format!("--pico-primary: {value};")).is_ok(),
+                "{value} should be a light/dark colour pair"
+            );
+        }
+    }
+
+    #[test]
+    fn a_color_pair_has_canonical_whitespace_and_round_trips() {
+        let source = "\n --devsite-scheme:   auto;\n --pico-primary:\n   light-dark(  #7b3fe4  ,   rgb( 169  130  255 )  );\n";
+        let canonical = css(source).unwrap();
+        assert_eq!(
+            canonical,
+            "--devsite-scheme: auto;\n--pico-primary: light-dark( #7b3fe4 , rgb( 169 130 255 ) );\n"
+        );
+        assert_eq!(css(&canonical).unwrap(), canonical);
+    }
+
+    #[test]
+    fn damis_palette_can_define_both_schemes() {
+        let source = "
+            --devsite-scheme: auto;
+            --pico-background-color: light-dark(#fefae0, #283618);
+            --pico-color: light-dark(#283618, #fefae0);
+            --pico-primary: light-dark(#bc6c25, #dda15e);
+        ";
+        assert_eq!(
+            css(source).unwrap(),
+            "--devsite-scheme: auto;\n\
+             --pico-background-color: light-dark(#fefae0, #283618);\n\
+             --pico-color: light-dark(#283618, #fefae0);\n\
+             --pico-primary: light-dark(#bc6c25, #dda15e);\n"
+        );
+    }
+
+    #[test]
+    fn color_pairs_are_accepted_with_forced_and_automatic_schemes() {
+        for scheme in ["light", "dark", "auto"] {
+            let theme = format!(
+                "--devsite-scheme: {scheme}; \
+                 --pico-primary: light-dark(#7b3fe4, #a982ff);"
+            );
+            assert!(
+                parse(&theme).is_ok(),
+                "{scheme} should accept a colour pair"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_color_pairs() {
+        for value in [
+            "light-dark()",
+            "light-dark(red)",
+            "light-dark(, blue)",
+            "light-dark(red, )",
+            "light-dark(red, blue, green)",
+            "light-dark(red,, blue)",
+            "light-dark(rgb(1 2 3), blue",
+            "light-dark(rgb(1 2 3, blue)",
+            "light-dark(rgb(1 2 3)), blue)",
+        ] {
+            assert!(
+                parse(&format!("--pico-primary: {value};")).is_err(),
+                "{value} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_unsupported_functions_inside_color_pairs() {
+        for value in [
+            "light-dark(var(--pico-color), blue)",
+            "light-dark(calc(1 + 1), blue)",
+            "light-dark(url(https://example.com/x.png), blue)",
+            "light-dark(linear-gradient(red, blue), green)",
+            "light-dark(light-dark(red, blue), green)",
+            "light-dark(rgb(calc(1 + 1) 0 0), blue)",
+        ] {
+            assert!(
+                parse(&format!("--pico-primary: {value};")).is_err(),
+                "{value} should be refused"
+            );
+        }
+    }
+
+    #[test]
     fn rejects_values_that_only_look_like_colors() {
         for value in [
             "url(https://example.com/x.png)",
@@ -536,9 +677,20 @@ mod tests {
             "--pico-primary: red !important;",
             "</style><script>alert(1)</script>",
             "--pico-primary: red; /* unterminated",
+            "--pico-primary: light-dark(red, blue); } body { display: none",
+            "--pico-primary: light-dark(red, </style><script>alert(1)</script>);",
         ] {
             assert!(parse(source).is_err(), "{source:?} should be refused");
         }
+    }
+
+    #[test]
+    fn reported_color_grammar_includes_color_pairs() {
+        let description = properties()
+            .find(|(name, _)| *name == "--pico-primary")
+            .unwrap()
+            .1;
+        assert!(description.contains("light-dark(#7b3fe4, #a982ff)"));
     }
 
     #[test]

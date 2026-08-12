@@ -158,13 +158,15 @@ the failure mode the list exists to prevent.
 
 `--devsite-scheme` is the one key that is not a Pico variable. It sets
 `data-theme` on the page, which is how Pico chooses between its own light and
-dark palettes; the rest of the theme then adjusts that starting point.
+dark palettes; the rest of the theme then adjusts that starting point. `auto`
+leaves `data-theme` unset and follows the viewer's system preference. Explicit
+`light` or `dark` forces that scheme.
 
 ### Value grammars
 
 | Kind | Accepts |
 | --- | --- |
-| colour | `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`; `rgb()`, `rgba()`, `hsl()`, `hsla()`, `oklch()` over plain numbers; a CSS colour name; `transparent`; `currentcolor` |
+| colour | `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`; `rgb()`, `rgba()`, `hsl()`, `hsla()`, `oklch()` over plain numbers; a CSS colour name; `transparent`; `currentcolor`; or `light-dark(<light-color>, <dark-color>)` containing exactly two of these colours |
 | length | a non-negative number with `px`, `rem`, `em`, `ch`, `ex`, `vw`, `vh`, `vmin`, `vmax` or `%`, or bare `0` |
 | number | a non-negative unitless number |
 
@@ -172,6 +174,21 @@ dark palettes; the rest of the theme then adjusts that starting point.
 drawn from the alphabet `[0-9a-z#%.,/()+- ]`, so it cannot carry `<`, `"` or `}`
 — the rendered rule is safe to inline in a `<style>` element as a property of the
 grammar, not of an escaping step someone has to remember.
+
+`light-dark()` uses its first colour in light mode and its second in dark mode.
+Either side may use any supported colour form, including a functional colour:
+
+```css
+--devsite-scheme: auto;
+--pico-primary: light-dark(#7b3fe4, #a982ff);
+--pico-background-color: light-dark(rgb(250 248 255), rgb(24 18 32));
+```
+
+With `auto`, the pair follows the viewer's system preference. Setting
+`--devsite-scheme: light` always selects the first colour; setting it to `dark`
+always selects the second. The parser understands only this one level of
+nesting: another `light-dark()`, `var()`, `calc()`, `url()`, or any other
+function inside the pair is refused.
 
 ## What a theme cannot do
 
@@ -203,9 +220,11 @@ devsite theme clear
 
 ```css
 /* my-theme.css */
---devsite-scheme: dark;
---pico-primary: #7b3fe4;
---pico-primary-hover: #8f5bea;
+--devsite-scheme: auto;
+--pico-background-color: light-dark(#fefae0, #283618);
+--pico-color: light-dark(#283618, #fefae0);
+--pico-primary: light-dark(#bc6c25, #dda15e);
+--pico-primary-hover: light-dark(#606c38, #fefae0);
 --pico-border-radius: 0.5rem;
 --pico-font-weight: 400;
 ```
