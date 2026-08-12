@@ -1,11 +1,52 @@
 # dev.site
 
-dev.site is a profile for links and private TCP services. A service stays on the
-machine that owns it. The machine opens an outbound Iroh connection, and an authorized
-viewer uses the `devsite` CLI to map that service onto a loopback port.
+[dev.site](https://dev.site) puts links and private TCP services on one developer profile.
+Services stay on the machines that own them. An approved user maps a service onto a local
+loopback port with the `devsite` CLI.
 
-Version 0.2 intentionally replaces the early single-page HTTP fetch experiment. Services
-are protocol-agnostic TCP byte streams; they are not assumed to be websites.
+The control plane handles identity, profiles, sharing, and short-lived capabilities. It
+never carries service traffic. Hosts make outbound Iroh connections, so there is no public
+listener or inbound port to configure.
+
+Version 0.2.0 replaces the early single-page HTTP fetch experiment. Services are
+protocol-agnostic TCP byte streams; they are not assumed to be websites.
+
+## Install
+
+macOS with [Homebrew](https://brew.sh):
+
+```bash
+brew install FelineStateMachine/tap/devsite
+```
+
+Linux binaries and other builds are attached to the
+[latest GitHub release](https://github.com/FelineStateMachine/devsite/releases/latest).
+The CLI is one binary; `devsite daemon run` is its long-running host mode.
+
+## Quick start
+
+Sign in at [dev.site](https://dev.site), create a machine credential on the dashboard, and
+use the one-time value to log in:
+
+```bash
+devsite login dsm_...
+```
+
+Host a named local service and keep the daemon running:
+
+```bash
+devsite service host 5432 --name postgres
+devsite daemon run
+```
+
+Approve a share on the dashboard, open the service, and choose **Get ticket**. On the
+viewer machine:
+
+```bash
+devsite connect dst_...
+# connected to postgres (https://dev.site/s/res_...)
+#   listening on 127.0.0.1:43127
+```
 
 ## Shape
 
@@ -32,15 +73,9 @@ expiry, and one-use nonce before opening the configured loopback target.
 
 The transport ALPN is `devsite/tcp/1`.
 
-## Commands
+## Services and links
 
-After signing in at <https://dev.site>, create a named machine credential on the dashboard:
-
-```bash
-devsite login dsm_...
-```
-
-Host a loopback TCP port. Services default to private:
+Services default to private:
 
 ```bash
 devsite service host 3000
@@ -212,3 +247,7 @@ either is intentionally disruptive.
   folders, credentials, and share lists.
 - Machine credentials and browser sessions are stored only as SHA-256 hashes and can be
   revoked from the dashboard.
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
