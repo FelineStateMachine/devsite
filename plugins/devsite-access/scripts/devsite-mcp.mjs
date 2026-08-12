@@ -13,7 +13,10 @@ const skillPath = existsSync(repositorySkillPath)
   : resolve(root, 'skills/devsite-cli/SKILL.md');
 const binary = process.env.DEVSITE_BIN || 'devsite';
 const protocolVersion = '2026-07-28';
-const serverInfo = { name: 'devsite', version: '0.1.0' };
+const pluginManifest = JSON.parse(
+  readFileSync(resolve(root, '.codex-plugin/plugin.json'), 'utf8'),
+);
+const serverInfo = { name: 'devsite', version: pluginManifest.version };
 const serverMeta = { 'io.modelcontextprotocol/serverInfo': serverInfo };
 const inFlight = new Map();
 const cancelled = new Set();

@@ -30,6 +30,12 @@ jobs:
             exit 1
           fi
 
+          plugin_version="$(node -p "require('./plugins/devsite-access/.codex-plugin/plugin.json').version")"
+          if [[ "$tag_version" != "$plugin_version" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match devsite-access plugin version $plugin_version" >&2
+            exit 1
+          fi
+
   test:
     name: Test workspace
     needs: validate
@@ -93,9 +99,11 @@ jobs:
         shell: bash
         run: |
           name="devsite-${GITHUB_REF_NAME}-${{ matrix.target }}"
-          mkdir -p "dist/$name"
+          mkdir -p "dist/$name/plugins"
           install -m 0755 "target/${{ matrix.target }}/release/devsite" "dist/$name/devsite"
           cp README.md LICENSE "dist/$name/"
+          cp -R docs skills "dist/$name/"
+          cp -R plugins/devsite-access "dist/$name/plugins/"
           tar -C dist -czf "dist/$name.tar.gz" "$name"
           rm -rf "dist/$name"
 
@@ -107,6 +115,9 @@ jobs:
           New-Item -ItemType Directory -Path "dist/$name" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/devsite.exe" "dist/$name/devsite.exe"
           Copy-Item README.md, LICENSE "dist/$name/"
+          Copy-Item docs, skills -Destination "dist/$name" -Recurse
+          New-Item -ItemType Directory -Path "dist/$name/plugins" | Out-Null
+          Copy-Item plugins/devsite-access -Destination "dist/$name/plugins" -Recurse
           Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
           Remove-Item -Recurse "dist/$name"
 

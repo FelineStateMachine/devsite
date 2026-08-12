@@ -821,7 +821,7 @@ dependencies = [
 
 [[package]]
 name = "devsite-cli"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -842,7 +842,7 @@ dependencies = [
 
 [[package]]
 name = "devsite-client"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "devsite-proto",
@@ -854,7 +854,7 @@ dependencies = [
 
 [[package]]
 name = "devsite-daemon"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "data-encoding",
@@ -873,7 +873,7 @@ dependencies = [
 
 [[package]]
 name = "devsite-proto"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "data-encoding",
  "ed25519-dalek 2.2.0",
@@ -885,7 +885,7 @@ dependencies = [
 
 [[package]]
 name = "devsite-server"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "axum",
