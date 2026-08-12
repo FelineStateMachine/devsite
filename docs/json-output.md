@@ -27,3 +27,28 @@ transport warnings remain on stderr and never contaminate JSON stdout.
 
 JSON mode is non-interactive. In particular, `devsite login --json` requires its ticket as an
 argument rather than prompting on stdin.
+
+## Inventory, plans, and diagnostics
+
+`devsite resources list --json` joins the control plane's owned resources with this
+machine's hosted-service config. Service states distinguish `serving_here`,
+`configured_here`, and `not_configured_here`; `local_only_services` identifies local
+entries whose remote resource is already absent.
+
+Resource mutations accept `--plan` (`--dry-run` is an alias):
+
+```console
+devsite link set --name docs --url https://example.com --public --plan --json
+devsite service remove postgres --plan --json
+```
+
+Plans return `applied: false` with validated field, recipient, effect, and local-config
+changes. They never write remote or local state. Applied mutations retain their existing
+result fields and add `applied: true` plus the authoritative plan the server applied.
+
+`devsite doctor --json` returns a report rather than treating an unhealthy installation as
+a command failure. The envelope remains `ok: true` when the report was produced; inspect
+`result.healthy`, `result.checks`, and `result.actions`. Doctor checks endpoint identity,
+file permissions, server/API compatibility, the pinned signing key, credential binding,
+daemon registration, and remote/local resource drift. It does not open connections to
+hosted services.

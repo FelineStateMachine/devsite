@@ -103,13 +103,13 @@ impl Paths {
     }
 
     pub fn identity(&self) -> PathBuf {
-        self.root.join("identity.key")
+        self.root.join("devsite-endpoint.key")
     }
 
     /// Public half of [`Self::identity`]. Public Ed25519 material follows the
     /// conventional `.pub` naming used by the rest of the CLI handoff files.
     pub fn identity_public(&self) -> PathBuf {
-        self.root.join("identity.pub")
+        self.root.join("devsite-endpoint.pub")
     }
 
     pub fn config(&self) -> PathBuf {
@@ -166,6 +166,7 @@ impl Paths {
     /// This key *is* the daemon's identity — every capability ever issued names it as the
     /// audience — so it must survive restarts and must not be world-readable.
     pub fn load_or_create_identity(&self) -> Result<SecretKey> {
+        self.migrate_legacy_identity_files()?;
         let path = self.identity();
         let key = if path.exists() {
             let raw =
@@ -189,6 +190,22 @@ impl Paths {
                 .with_context(|| format!("writing {}", public_path.display()))?;
         }
         Ok(key)
+    }
+
+    /// Move endpoint identity files written by CLI versions before the filenames
+    /// identified their purpose. Existing destination files always win.
+    fn migrate_legacy_identity_files(&self) -> Result<()> {
+        for (legacy, current) in [
+            (self.root.join("identity.key"), self.identity()),
+            (self.root.join("identity.pub"), self.identity_public()),
+        ] {
+            if legacy.exists() && !current.exists() {
+                std::fs::rename(&legacy, &current).with_context(|| {
+                    format!("moving {} to {}", legacy.display(), current.display())
+                })?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -285,6 +302,28 @@ mod tests {
             format!("{}\n", key.public())
         );
 
+        std::fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    #[test]
+    fn legacy_identity_filenames_migrate_without_changing_the_key() {
+        let paths = test_paths();
+        std::fs::create_dir_all(&paths.root).unwrap();
+        let original = SecretKey::generate();
+        std::fs::write(paths.root.join("identity.key"), original.to_bytes()).unwrap();
+        std::fs::write(
+            paths.root.join("identity.pub"),
+            format!("{}\n", original.public()),
+        )
+        .unwrap();
+
+        let loaded = paths.load_or_create_identity().unwrap();
+
+        assert_eq!(loaded.to_bytes(), original.to_bytes());
+        assert!(paths.identity().exists());
+        assert!(paths.identity_public().exists());
+        assert!(!paths.root.join("identity.key").exists());
+        assert!(!paths.root.join("identity.pub").exists());
         std::fs::remove_dir_all(&paths.root).unwrap();
     }
 }

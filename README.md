@@ -144,6 +144,20 @@ prompts. Command-specific `--help` is available as structured JSON, and failures
 recovery suggestion. The complete stdout and exit-code contract is in
 [`docs/json-output.md`](docs/json-output.md).
 
+Inspect remote resources together with this machine's hosting state, validate a mutation
+without applying it, or diagnose configuration and control-plane drift:
+
+```bash
+devsite resources list --json
+devsite service host 5432 --name postgres --share @bob --plan --json
+devsite doctor --json
+```
+
+`--dry-run` is an alias for `--plan`. Plans make no remote or local changes. A portable
+agent skill that teaches these intent-based workflows through the CLI's JSON contract lives
+at [`skills/devsite-cli/SKILL.md`](skills/devsite-cli/SKILL.md); it has no dependency on a
+particular model or agent harness.
+
 Homebrew installs can supervise it at login on macOS or Linux:
 
 ```bash
@@ -157,7 +171,7 @@ systemctl --user enable --now devsite.service
 ```
 
 The endpoint identity persists in the devsite config directory, with its Ed25519 public key
-written to `identity.pub`. The daemon registers that public endpoint id with the control
+written to `devsite-endpoint.pub`. The daemon registers that public endpoint id with the control
 plane once at startup, publishes its address through Iroh, and reloads service targets and
 authorizations every two seconds. Adding or removing a service does not require restarting
 it.

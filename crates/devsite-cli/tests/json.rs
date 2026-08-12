@@ -37,6 +37,14 @@ fn global_json_flag_structures_success() {
     assert_eq!(value["command"], "status");
     assert_eq!(value["result"]["daemon"]["running"], false);
     assert!(value["result"]["services"].is_array());
+    assert!(value["result"]["identity_path"]
+        .as_str()
+        .unwrap()
+        .ends_with("devsite-endpoint.key"));
+    assert!(value["result"]["identity"]["public_path"]
+        .as_str()
+        .unwrap()
+        .ends_with("devsite-endpoint.pub"));
     assert!(output.stderr.is_empty());
 }
 
@@ -103,4 +111,28 @@ fn human_runtime_errors_end_with_a_recovery_suggestion() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("error: port 0 cannot be hosted"));
     assert!(stderr.contains("suggestion: Run `devsite service host --help`"));
+}
+
+#[test]
+fn doctor_reports_state_and_actions_without_enrollment() {
+    let output = devsite(&["doctor", "--json"]);
+    assert!(output.status.success());
+    let value = json(&output);
+    assert_eq!(value["command"], "doctor");
+    assert_eq!(value["result"]["healthy"], true);
+    assert!(value["result"]["checks"].is_array());
+    assert_eq!(value["result"]["actions"][0]["id"], "login");
+}
+
+#[test]
+fn resources_and_plan_flags_are_discoverable_in_structured_help() {
+    let resources = devsite(&["resources", "list", "--json", "--help"]);
+    assert!(resources.status.success());
+    assert_eq!(json(&resources)["result"]["command"], "resources.list");
+
+    let plan = devsite(&["link", "set", "--json", "--help"]);
+    assert!(plan.status.success());
+    let text = json(&plan)["result"]["text"].as_str().unwrap().to_string();
+    assert!(text.contains("--plan"));
+    assert!(text.contains("--dry-run"));
 }

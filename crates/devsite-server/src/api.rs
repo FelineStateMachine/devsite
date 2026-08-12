@@ -244,6 +244,49 @@ pub struct CreateResourceRequest {
 #[derive(Serialize)]
 pub struct CreateResourceResponse {
     pub resource_id: String,
+    pub plan: ResourcePlan,
+}
+
+#[derive(Serialize)]
+pub struct ResourcePlanResponse {
+    pub plan: ResourcePlan,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourcePlan {
+    pub operation: &'static str,
+    pub target: ResourcePlanTarget,
+    pub changes: Vec<ResourcePlanChange>,
+    pub recipient_changes: Vec<RecipientPlanChange>,
+    pub effects: Vec<ResourcePlanEffect>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourcePlanTarget {
+    pub resource_id: Option<String>,
+    pub kind: &'static str,
+    pub name: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourcePlanChange {
+    pub field: &'static str,
+    pub from: serde_json::Value,
+    pub to: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecipientPlanChange {
+    pub handle: String,
+    pub from: Option<&'static str>,
+    pub to: Option<&'static str>,
+    pub reason: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ResourcePlanEffect {
+    pub code: &'static str,
+    pub handles: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -351,6 +394,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/me", get(me))
         .route("/api/profile", post(claim_handle))
         .route("/api/resources", post(create_resource).get(list_resources))
+        .route("/api/resources/plan", post(plan_resource))
         .route("/api/resources/{id}", delete(delete_resource))
         .route("/api/resources/{id}/shares", put(set_resource_shares))
         .route("/api/share-invitations", get(list_share_invitations))
@@ -362,7 +406,7 @@ pub fn router(state: Shared) -> Router {
             "/api/share-invitations/{id}",
             delete(decline_share_invitation),
         )
-        .route("/api/daemon", put(register_daemon))
+        .route("/api/daemon", get(daemon_info).put(register_daemon))
         .route("/api/daemon/authorizations", get(daemon_authorizations))
         .route("/api/machine/enroll", put(enroll_machine))
         .route(
@@ -523,8 +567,66 @@ async fn create_resource(
 ) -> ApiResult<impl IntoResponse> {
     let owner = require_account(&state, &headers)?;
     check_rate(&state, owner, RateClass::Mutation)?;
-    let name = validate_resource_name(&body.name)?;
+    let mut db = state.db.lock().unwrap();
+    let mut prepared = prepare_resource(&db, owner, &body)?;
 
+    let resource = db
+        .create_resource(
+            owner,
+            &prepared.name,
+            prepared.kind,
+            prepared.visibility,
+            prepared.url.as_deref(),
+            prepared.folder.as_deref(),
+            now_secs(),
+        )
+        .map_err(ApiError::internal)?;
+
+    // The share list this request names is the whole share list afterwards.
+    // Re-running `service host --share @carol` means Carol is the invited recipient,
+    // not Carol plus whoever was named the last time it ran.
+    db.set_shares(resource, &prepared.viewers)
+        .map_err(ApiError::internal)?;
+    prepared.plan.target.resource_id = Some(resource.to_string());
+
+    Ok(Json(CreateResourceResponse {
+        resource_id: resource.to_string(),
+        plan: prepared.plan,
+    }))
+}
+
+async fn plan_resource(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<CreateResourceRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let owner = require_account(&state, &headers)?;
+    // Planning resolves account handles and therefore uses the same bounded
+    // rate class as applying a mutation.
+    check_rate(&state, owner, RateClass::Mutation)?;
+    let db = state.db.lock().unwrap();
+    let prepared = prepare_resource(&db, owner, &body)?;
+    Ok(Json(ResourcePlanResponse {
+        plan: prepared.plan,
+    }))
+}
+
+struct PreparedResource {
+    name: String,
+    kind: ResourceKind,
+    visibility: Visibility,
+    url: Option<String>,
+    folder: Option<String>,
+    viewers: Vec<AccountId>,
+    plan: ResourcePlan,
+}
+
+fn prepare_resource(
+    db: &Db,
+    owner: AccountId,
+    body: &CreateResourceRequest,
+) -> ApiResult<PreparedResource> {
+    let name = validate_resource_name(&body.name)?.to_string();
     let kind = match body.kind.as_str() {
         "link" => ResourceKind::Link,
         "service" => ResourceKind::Service,
@@ -553,13 +655,15 @@ async fn create_resource(
         }
         ResourceKind::Service => None,
     };
-
     let folder = validate_folder(body.folder.as_deref())?;
 
-    let mut db = state.db.lock().unwrap();
-
+    let existing = db
+        .resources_owned_by(owner)
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .find(|resource| resource.name == name && resource.kind == kind);
     if !db
-        .resource_named(owner, name, kind)
+        .resource_named(owner, &name, kind)
         .map_err(ApiError::internal)?
         && db.resource_count(owner).map_err(ApiError::internal)? >= MAX_RESOURCES
     {
@@ -568,32 +672,164 @@ async fn create_resource(
         )));
     }
 
-    // Resolve every share target *before* creating anything. Creating first and failing
-    // partway leaves an orphaned resource on the profile that the owner's daemon knows
-    // nothing about — it would advertise itself and then refuse every request.
-    let viewers = resolve_share_accounts(&db, owner, &body.share_with)?;
+    // Resolve every share target before either planning or creating anything.
+    let viewers = resolve_share_accounts(db, owner, &body.share_with)?;
+    let desired_handles = viewers
+        .iter()
+        .map(|viewer| {
+            db.account_by_id(*viewer)
+                .map_err(ApiError::internal)?
+                .and_then(|account| account.handle)
+                .ok_or_else(|| ApiError::bad_request("a share recipient no longer has a handle"))
+        })
+        .collect::<ApiResult<Vec<_>>>()?;
+    let plan = build_resource_plan(
+        db,
+        existing.as_ref(),
+        &name,
+        kind,
+        visibility,
+        url.as_deref(),
+        folder.as_deref(),
+        &desired_handles,
+    )?;
 
-    let resource = db
-        .create_resource(
-            owner,
-            name,
-            kind,
-            visibility,
-            url.as_deref(),
-            folder.as_deref(),
-            now_secs(),
-        )
-        .map_err(ApiError::internal)?;
+    Ok(PreparedResource {
+        name,
+        kind,
+        visibility,
+        url,
+        folder,
+        viewers,
+        plan,
+    })
+}
 
-    // The share list this request names is the whole share list afterwards.
-    // Re-running `service host --share @carol` means Carol is the invited recipient,
-    // not Carol plus whoever was named the last time it ran.
-    db.set_shares(resource, &viewers)
-        .map_err(ApiError::internal)?;
+#[allow(clippy::too_many_arguments)]
+fn build_resource_plan(
+    db: &Db,
+    existing: Option<&crate::db::Resource>,
+    name: &str,
+    kind: ResourceKind,
+    visibility: Visibility,
+    url: Option<&str>,
+    folder: Option<&str>,
+    desired_handles: &[String],
+) -> ApiResult<ResourcePlan> {
+    let mut changes = Vec::new();
+    let current_visibility = existing.map(|resource| resource.visibility.as_str());
+    let current_url = existing.and_then(|resource| resource.url.as_deref());
+    let current_folder = existing.and_then(|resource| resource.folder.as_deref());
+    for (field, from, to) in [
+        (
+            "visibility",
+            serde_json::to_value(current_visibility).unwrap(),
+            serde_json::to_value(Some(visibility.as_str())).unwrap(),
+        ),
+        (
+            "url",
+            serde_json::to_value(current_url).unwrap(),
+            serde_json::to_value(url).unwrap(),
+        ),
+        (
+            "folder",
+            serde_json::to_value(current_folder).unwrap(),
+            serde_json::to_value(folder).unwrap(),
+        ),
+    ] {
+        if from != to {
+            changes.push(ResourcePlanChange { field, from, to });
+        }
+    }
 
-    Ok(Json(CreateResourceResponse {
-        resource_id: resource.to_string(),
-    }))
+    let existing_recipients = match existing {
+        Some(resource) => db
+            .share_recipients(resource.id)
+            .map_err(ApiError::internal)?,
+        None => Vec::new(),
+    };
+    let desired = desired_handles
+        .iter()
+        .map(|handle| handle.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let existing_names = existing_recipients
+        .iter()
+        .map(|recipient| recipient.handle.to_ascii_lowercase())
+        .collect::<HashSet<_>>();
+    let destination_changed =
+        kind == ResourceKind::Link && existing.is_some() && current_url != url;
+    let mut recipient_changes = Vec::new();
+    let mut reapproval = Vec::new();
+    let mut access_revoked = Vec::new();
+    let mut invitations_withdrawn = Vec::new();
+    let mut invited = Vec::new();
+
+    for recipient in &existing_recipients {
+        let wanted = desired.contains(&recipient.handle.to_ascii_lowercase());
+        if !wanted {
+            recipient_changes.push(RecipientPlanChange {
+                handle: recipient.handle.clone(),
+                from: Some(recipient.status.as_str()),
+                to: None,
+                reason: "recipient_removed",
+            });
+            match recipient.status {
+                ShareStatus::Accepted => access_revoked.push(recipient.handle.clone()),
+                ShareStatus::Pending => invitations_withdrawn.push(recipient.handle.clone()),
+                ShareStatus::Declined => {}
+            }
+        } else if destination_changed && recipient.status == ShareStatus::Accepted {
+            recipient_changes.push(RecipientPlanChange {
+                handle: recipient.handle.clone(),
+                from: Some("accepted"),
+                to: Some("pending"),
+                reason: "destination_changed",
+            });
+            reapproval.push(recipient.handle.clone());
+        }
+    }
+    for handle in desired_handles {
+        if !existing_names.contains(&handle.to_ascii_lowercase()) {
+            recipient_changes.push(RecipientPlanChange {
+                handle: handle.clone(),
+                from: None,
+                to: Some("pending"),
+                reason: "recipient_added",
+            });
+            invited.push(handle.clone());
+        }
+    }
+
+    let mut effects = Vec::new();
+    for (code, handles) in [
+        ("recipient_reapproval_required", reapproval),
+        ("accepted_access_revoked", access_revoked),
+        ("pending_invitations_withdrawn", invitations_withdrawn),
+        ("recipients_invited", invited),
+    ] {
+        if !handles.is_empty() {
+            effects.push(ResourcePlanEffect { code, handles });
+        }
+    }
+
+    let operation = if existing.is_none() {
+        "create"
+    } else if changes.is_empty() && recipient_changes.is_empty() {
+        "noop"
+    } else {
+        "update"
+    };
+    Ok(ResourcePlan {
+        operation,
+        target: ResourcePlanTarget {
+            resource_id: existing.map(|resource| resource.id.to_string()),
+            kind: kind.as_str(),
+            name: name.to_string(),
+        },
+        changes,
+        recipient_changes,
+        effects,
+    })
 }
 
 fn validate_resource_visibility(kind: ResourceKind, visibility: Visibility) -> ApiResult<()> {
@@ -872,6 +1108,27 @@ async fn register_daemon(
     db.register_daemon(machine.account.id, &machine.endpoint_id)
         .map_err(ApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Report endpoint identities without implying daemon liveness. Registration is
+/// durable and records only which endpoint the account currently addresses.
+async fn daemon_info(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    let machine = require_machine(&state, &headers)?;
+    let registered_endpoint_id = state
+        .db
+        .lock()
+        .unwrap()
+        .daemon_endpoint(machine.account.id)
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({
+        "credential_endpoint_id": machine.endpoint_id,
+        "registration_matches_credential": registered_endpoint_id.as_deref()
+            == Some(machine.endpoint_id.as_str()),
+        "registered_endpoint_id": registered_endpoint_id,
+    })))
 }
 
 async fn daemon_authorizations(
@@ -1627,5 +1884,72 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::AUTHORIZATION, "Bearer cli-token".parse().unwrap());
         assert_eq!(bearer_token(&headers).as_deref(), Some("cli-token"));
+    }
+
+    #[test]
+    fn planning_a_resource_validates_without_writing() {
+        let db = Db::open(":memory:").unwrap();
+        let alice = db.upsert_account("test", "alice", 1).unwrap();
+        let body = CreateResourceRequest {
+            name: "docs".into(),
+            kind: "link".into(),
+            visibility: "public".into(),
+            url: Some("https://example.com/docs".into()),
+            share_with: Vec::new(),
+            folder: Some("Projects".into()),
+        };
+
+        let prepared = prepare_resource(&db, alice.id, &body).unwrap();
+
+        assert_eq!(prepared.plan.operation, "create");
+        assert_eq!(db.resource_count(alice.id).unwrap(), 0);
+        assert_eq!(prepared.plan.target.resource_id, None);
+    }
+
+    #[test]
+    fn changing_a_shared_link_destination_plans_reapproval() {
+        let mut db = Db::open(":memory:").unwrap();
+        let alice = db.upsert_account("test", "alice", 1).unwrap();
+        let bob = db.upsert_account("test", "bob", 1).unwrap();
+        db.set_handle(bob.id, "bob").unwrap();
+        let resource = db
+            .create_resource(
+                alice.id,
+                "staging",
+                ResourceKind::Link,
+                Visibility::Shared,
+                Some("https://old.example.com/"),
+                None,
+                1,
+            )
+            .unwrap();
+        db.set_shares(resource, &[bob.id]).unwrap();
+        assert!(db.accept_share(bob.id, resource).unwrap());
+        let body = CreateResourceRequest {
+            name: "staging".into(),
+            kind: "link".into(),
+            visibility: "shared".into(),
+            url: Some("https://new.example.com/".into()),
+            share_with: vec!["bob".into()],
+            folder: None,
+        };
+
+        let prepared = prepare_resource(&db, alice.id, &body).unwrap();
+
+        assert_eq!(prepared.plan.operation, "update");
+        assert!(prepared.plan.recipient_changes.iter().any(|change| {
+            change.handle == "bob"
+                && change.from == Some("accepted")
+                && change.to == Some("pending")
+                && change.reason == "destination_changed"
+        }));
+        assert!(prepared.plan.effects.iter().any(|effect| {
+            effect.code == "recipient_reapproval_required" && effect.handles == ["bob"]
+        }));
+        assert_eq!(
+            db.share_recipients(resource).unwrap()[0].status,
+            ShareStatus::Accepted,
+            "planning must not mutate recipient state"
+        );
     }
 }

@@ -54,6 +54,9 @@ enum Command {
     /// Manage ordinary external links.
     #[command(subcommand)]
     Link(LinkCommand),
+    /// Inspect resources stored on the control plane.
+    #[command(subcommand)]
+    Resources(ResourcesCommand),
     /// Host local TCP services.
     #[command(subcommand)]
     Service(ServiceCommand),
@@ -70,6 +73,8 @@ enum Command {
     Theme(ThemeCommand),
     /// Show what this machine is configured to serve.
     Status,
+    /// Diagnose local configuration, control-plane compatibility, and resource drift.
+    Doctor,
     /// Daemon control.
     #[command(subcommand)]
     Daemon(DaemonCommand),
@@ -95,12 +100,24 @@ enum LinkCommand {
         /// whatever folder it was in.
         #[arg(long, value_name = "NAME")]
         folder: Option<String>,
+        /// Validate and show the exact change without applying it.
+        #[arg(long, visible_alias = "dry-run")]
+        plan: bool,
     },
     /// Take a link off your profile.
     Remove {
         /// Name previously passed to `link set`.
         name: String,
+        /// Show what would be removed without applying it.
+        #[arg(long, visible_alias = "dry-run")]
+        plan: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ResourcesCommand {
+    /// List owned links and services with share and local-hosting state.
+    List,
 }
 
 #[derive(Subcommand)]
@@ -118,11 +135,17 @@ enum ServiceCommand {
         /// Presentation folder. TCP services default to `Services`.
         #[arg(long, value_name = "NAME")]
         folder: Option<String>,
+        /// Validate and show the exact change without applying it.
+        #[arg(long, visible_alias = "dry-run")]
+        plan: bool,
     },
     /// Stop hosting a service and take it off your profile.
     Remove {
         /// Name previously passed to `service host`.
         name: String,
+        /// Show what would be removed without applying it.
+        #[arg(long, visible_alias = "dry-run")]
+        plan: bool,
     },
 }
 
@@ -158,6 +181,7 @@ impl Command {
             Self::Login { .. } => "login",
             Self::Link(LinkCommand::Set { .. }) => "link.set",
             Self::Link(LinkCommand::Remove { .. }) => "link.remove",
+            Self::Resources(ResourcesCommand::List) => "resources.list",
             Self::Service(ServiceCommand::Host { .. }) => "service.host",
             Self::Service(ServiceCommand::Remove { .. }) => "service.remove",
             Self::Connect { .. } => "connect",
@@ -166,6 +190,7 @@ impl Command {
             Self::Theme(ThemeCommand::Clear) => "theme.clear",
             Self::Theme(ThemeCommand::Properties) => "theme.properties",
             Self::Status => "status",
+            Self::Doctor => "doctor",
             Self::Daemon(DaemonCommand::Run) => "daemon.run",
             Self::Daemon(DaemonCommand::Status) => "daemon.status",
         }
@@ -194,7 +219,15 @@ fn help_target(args: &[std::ffi::OsString]) -> Option<String> {
     let top = words.first()?.as_str();
     if !matches!(
         top,
-        "login" | "link" | "service" | "connect" | "theme" | "status" | "daemon"
+        "login"
+            | "link"
+            | "resources"
+            | "service"
+            | "connect"
+            | "theme"
+            | "status"
+            | "doctor"
+            | "daemon"
     ) {
         return None;
     }
@@ -202,6 +235,7 @@ fn help_target(args: &[std::ffi::OsString]) -> Option<String> {
     let child_is_command = matches!(
         (top, child),
         ("link", Some("set" | "remove"))
+            | ("resources", Some("list"))
             | ("service", Some("host" | "remove"))
             | ("theme", Some("show" | "set" | "clear" | "properties"))
             | ("daemon", Some("run" | "status"))
@@ -258,11 +292,32 @@ struct PubKeyResponse {
 struct PublicConfig {
     api_version: u32,
     minimum_cli_version: String,
+    server_version: String,
+    daemon_protocol: String,
 }
 
 #[derive(Deserialize)]
 struct CreateResourceResponse {
     resource_id: String,
+    #[serde(default)]
+    plan: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct ResourcePlanResponse {
+    plan: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct MeResponse {
+    handle: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct DaemonInfo {
+    credential_endpoint_id: String,
+    registered_endpoint_id: Option<String>,
+    registration_matches_credential: bool,
 }
 
 #[derive(Deserialize)]
@@ -301,7 +356,7 @@ struct ResourceListing {
     resources: Vec<Resource>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct Resource {
     resource_id: String,
     name: String,
@@ -314,9 +369,10 @@ struct Resource {
     shares: Vec<ResourceShare>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct ResourceShare {
     handle: String,
+    status: String,
 }
 
 #[tokio::main]
@@ -468,20 +524,26 @@ async fn run(cli: Cli, output: Output) -> Result<()> {
             public,
             share,
             folder,
-        }) => set_link(&paths, &name, &url, public, share, folder, output).await,
-        Command::Link(LinkCommand::Remove { name }) => remove_link(&paths, &name, output).await,
+            plan,
+        }) => set_link(&paths, &name, &url, public, share, folder, plan, output).await,
+        Command::Link(LinkCommand::Remove { name, plan }) => {
+            remove_link(&paths, &name, plan, output).await
+        }
+        Command::Resources(ResourcesCommand::List) => resources_list(&paths, output).await,
         Command::Service(ServiceCommand::Host {
             port,
             name,
             share,
             folder,
-        }) => host_service(&paths, port, name, share, folder, output).await,
-        Command::Service(ServiceCommand::Remove { name }) => {
-            remove_service(&paths, &name, output).await
+            plan,
+        }) => host_service(&paths, port, name, share, folder, plan, output).await,
+        Command::Service(ServiceCommand::Remove { name, plan }) => {
+            remove_service(&paths, &name, plan, output).await
         }
         Command::Connect { ticket, listen } => connect(&cli.server, &ticket, listen, output).await,
         Command::Theme(command) => theme(&paths, &cli.server, command, output).await,
         Command::Status => status(&paths, output),
+        Command::Doctor => doctor(&paths, output).await,
         Command::Daemon(DaemonCommand::Run) => run_daemon(&paths, &cli.server, output).await,
         Command::Daemon(DaemonCommand::Status) => daemon_status(&paths, output),
     }
@@ -625,6 +687,7 @@ async fn set_link(
     public: bool,
     share: Vec<String>,
     folder: Option<String>,
+    plan: bool,
     output: Output,
 ) -> Result<()> {
     let visibility = if public {
@@ -638,6 +701,26 @@ async fn set_link(
     let config = load_authenticated(paths)?;
     let server = enrolled_server(&config)?;
     let api = ControlPlane::new(server, config.machine_credential.clone());
+    let payload = serde_json::json!({
+        "name": name,
+        "kind": "link",
+        "visibility": visibility_str(visibility),
+        "url": url,
+        "share_with": share,
+        "folder": folder,
+    });
+    if plan {
+        let planned: ResourcePlanResponse = api.post("/api/resources/plan", &payload).await?;
+        if output.json {
+            output.success(
+                "link.set",
+                serde_json::json!({ "applied": false, "plan": planned.plan }),
+            );
+        } else {
+            print_resource_plan(&planned.plan);
+        }
+        return Ok(());
+    }
     let update = warn_on_upsert(
         &api,
         "link",
@@ -653,19 +736,7 @@ async fn set_link(
             update.print_human();
         }
     }
-    let response: CreateResourceResponse = api
-        .post(
-            "/api/resources",
-            &serde_json::json!({
-                "name": name,
-                "kind": "link",
-                "visibility": visibility_str(visibility),
-                "url": url,
-                "share_with": share,
-                "folder": folder,
-            }),
-        )
-        .await?;
+    let response: CreateResourceResponse = api.post("/api/resources", &payload).await?;
     if output.json {
         output.success(
             "link.set",
@@ -677,6 +748,8 @@ async fn set_link(
                 "folder": folder,
                 "recipients": share,
                 "update": update,
+                "applied": true,
+                "plan": response.plan,
             }),
         );
     } else {
@@ -697,7 +770,12 @@ async fn set_link(
 /// everything by id, and an endpoint that deleted by name would have to invent a
 /// rule for a link and a service sharing one. Listing first also means the "no
 /// such thing" case is answered with the names that do exist.
-async fn remove_resource(paths: &Paths, name: &str, kind: &str) -> Result<Resource> {
+async fn remove_resource(
+    paths: &Paths,
+    name: &str,
+    kind: &str,
+    apply: bool,
+) -> Result<Option<Resource>> {
     let config = load_authenticated(paths)?;
     let server = enrolled_server(&config)?;
     let api = ControlPlane::new(server, config.machine_credential.clone());
@@ -708,21 +786,42 @@ async fn remove_resource(paths: &Paths, name: &str, kind: &str) -> Result<Resour
         .into_iter()
         .find(|r| r.name == name && r.kind == kind);
 
-    let Some(resource) = found else {
-        bail!("you have no {kind} called `{name}`");
-    };
-    api.delete(&format!("/api/resources/{}", resource.resource_id))
-        .await?;
-    Ok(resource)
+    if apply {
+        if let Some(resource) = &found {
+            api.delete(&format!("/api/resources/{}", resource.resource_id))
+                .await?;
+        }
+    }
+    Ok(found)
 }
 
-async fn remove_link(paths: &Paths, name: &str, output: Output) -> Result<()> {
-    let removed = remove_resource(paths, name, "link").await?;
+async fn remove_link(paths: &Paths, name: &str, plan: bool, output: Output) -> Result<()> {
+    let removed = remove_resource(paths, name, "link", !plan)
+        .await?
+        .with_context(|| format!("you have no link called `{name}`"))?;
+    let removal_plan = resource_removal_plan(&removed, None);
+    if plan {
+        if output.json {
+            output.success(
+                "link.remove",
+                serde_json::json!({ "applied": false, "plan": removal_plan }),
+            );
+        } else {
+            print_resource_plan(&removal_plan);
+        }
+        return Ok(());
+    }
     let url = removed.url.unwrap_or_default();
     if output.json {
         output.success(
             "link.remove",
-            serde_json::json!({ "resource_id": removed.resource_id, "name": name, "url": url }),
+            serde_json::json!({
+                "resource_id": removed.resource_id,
+                "name": name,
+                "url": url,
+                "applied": true,
+                "plan": removal_plan,
+            }),
         );
     } else {
         println!("removed link {name} → {url}");
@@ -736,22 +835,55 @@ async fn remove_link(paths: &Paths, name: &str, output: Output) -> Result<()> {
 /// machine does. A daemon that kept serving a resource the control plane has
 /// deleted is harmless — no capability can be issued for it any more — but a
 /// config that still lists it would re-register the name the next time it is hosted.
-async fn remove_service(paths: &Paths, name: &str, output: Output) -> Result<()> {
-    let removed = remove_resource(paths, name, "service").await?;
-
+async fn remove_service(paths: &Paths, name: &str, plan: bool, output: Output) -> Result<()> {
     let mut config = paths.load_config()?;
+    let local = config
+        .resources
+        .iter()
+        .find(|resource| resource.name == name);
+    let removed = remove_resource(paths, name, "service", !plan).await?;
+    if removed.is_none() && local.is_none() {
+        bail!("you have no service called `{name}`");
+    }
+    let removal_plan = match &removed {
+        Some(resource) => resource_removal_plan(resource, local.map(|service| service.target)),
+        None => serde_json::json!({
+            "operation": "delete",
+            "target": { "resource_id": null, "kind": "service", "name": name },
+            "changes": [],
+            "recipient_changes": [],
+            "effects": [{ "code": "local_service_mapping_removed", "handles": [] }],
+            "local_only": true,
+        }),
+    };
+    if plan {
+        if output.json {
+            output.success(
+                "service.remove",
+                serde_json::json!({ "applied": false, "plan": removal_plan }),
+            );
+        } else {
+            print_resource_plan(&removal_plan);
+        }
+        return Ok(());
+    }
+
     let before = config.resources.len();
     config.resources.retain(|r| r.name != name);
     paths.save_config(&config)?;
 
     let was_hosted_here = config.resources.len() != before;
+    let remote_already_absent = removed.is_none();
     if output.json {
         output.success(
             "service.remove",
             serde_json::json!({
-                "resource_id": removed.resource_id,
+                "resource_id": removed.as_ref().map(|resource| resource.resource_id.as_str()),
                 "name": name,
                 "was_hosted_here": was_hosted_here,
+                "remote_already_absent": remote_already_absent,
+                "applied": true,
+                "plan": removal_plan,
             }),
         );
     } else {
@@ -771,6 +903,7 @@ async fn host_service(
     name: Option<String>,
     share: Vec<String>,
     folder: Option<String>,
+    plan: bool,
     output: Output,
 ) -> Result<()> {
     if port == 0 {
@@ -789,6 +922,33 @@ async fn host_service(
     let config = load_authenticated(paths)?;
     let server = enrolled_server(&config)?;
     let api = ControlPlane::new(server, config.machine_credential.clone());
+    let payload = serde_json::json!({
+        "name": &name,
+        "kind": "service",
+        "visibility": visibility_str(visibility),
+        // Deliberately absent: the local target never leaves this machine.
+        "share_with": share,
+        "folder": folder,
+    });
+    if plan {
+        let planned: ResourcePlanResponse = api.post("/api/resources/plan", &payload).await?;
+        let planned = plan_with_local_changes(
+            planned.plan,
+            serde_json::json!([{
+                "operation": "upsert_hosted_service",
+                "target": target.to_string(),
+            }]),
+        );
+        if output.json {
+            output.success(
+                "service.host",
+                serde_json::json!({ "applied": false, "plan": planned }),
+            );
+        } else {
+            print_resource_plan(&planned);
+        }
+        return Ok(());
+    }
     let update = warn_on_upsert(
         &api,
         "service",
@@ -805,19 +965,16 @@ async fn host_service(
         }
     }
 
-    let response: CreateResourceResponse = api
-        .post(
-            "/api/resources",
-            &serde_json::json!({
-                "name": &name,
-                "kind": "service",
-                "visibility": visibility_str(visibility),
-                // Deliberately absent: the local target never leaves this machine.
-                "share_with": share,
-                "folder": folder,
-            }),
+    let response: CreateResourceResponse = api.post("/api/resources", &payload).await?;
+    let applied_plan = response.plan.map(|plan| {
+        plan_with_local_changes(
+            plan,
+            serde_json::json!([{
+                "operation": "upsert_hosted_service",
+                "target": target.to_string(),
+            }]),
         )
-        .await?;
+    });
 
     let resource_id = response
         .resource_id
@@ -848,6 +1005,8 @@ async fn host_service(
                 "url": format!("{server}/s/{resource_id}"),
                 "daemon": daemon_state(daemon_running),
                 "update": update,
+                "applied": true,
+                "plan": applied_plan,
             }),
         );
     } else {
@@ -1056,6 +1215,213 @@ fn display_handles(handles: &[String]) -> String {
         .join(", ")
 }
 
+fn plan_with_local_changes(
+    mut plan: serde_json::Value,
+    local_changes: serde_json::Value,
+) -> serde_json::Value {
+    if let Some(object) = plan.as_object_mut() {
+        object.insert("local_changes".to_string(), local_changes);
+    }
+    plan
+}
+
+fn resource_removal_plan(
+    resource: &Resource,
+    local_target: Option<SocketAddr>,
+) -> serde_json::Value {
+    let recipient_changes = resource
+        .shares
+        .iter()
+        .map(|recipient| {
+            serde_json::json!({
+                "handle": recipient.handle,
+                "from": recipient.status,
+                "to": null,
+                "reason": "resource_removed",
+            })
+        })
+        .collect::<Vec<_>>();
+    let accepted = resource
+        .shares
+        .iter()
+        .filter(|recipient| recipient.status == "accepted")
+        .map(|recipient| recipient.handle.clone())
+        .collect::<Vec<_>>();
+    let pending = resource
+        .shares
+        .iter()
+        .filter(|recipient| recipient.status == "pending")
+        .map(|recipient| recipient.handle.clone())
+        .collect::<Vec<_>>();
+    let mut effects = vec![serde_json::json!({
+        "code": "profile_entry_removed",
+        "handles": [],
+    })];
+    if !accepted.is_empty() {
+        effects.push(serde_json::json!({
+            "code": "accepted_access_revoked",
+            "handles": accepted,
+        }));
+    }
+    if !pending.is_empty() {
+        effects.push(serde_json::json!({
+            "code": "pending_invitations_withdrawn",
+            "handles": pending,
+        }));
+    }
+    if local_target.is_some() {
+        effects.push(serde_json::json!({
+            "code": "local_service_mapping_removed",
+            "handles": [],
+        }));
+    }
+    serde_json::json!({
+        "operation": "delete",
+        "target": {
+            "resource_id": resource.resource_id,
+            "kind": resource.kind,
+            "name": resource.name,
+        },
+        "changes": [],
+        "recipient_changes": recipient_changes,
+        "effects": effects,
+        "local_changes": local_target.map(|target| vec![serde_json::json!({
+            "operation": "remove_hosted_service",
+            "target": target.to_string(),
+        })]).unwrap_or_default(),
+    })
+}
+
+fn print_resource_plan(plan: &serde_json::Value) {
+    let operation = plan["operation"].as_str().unwrap_or("change");
+    let kind = plan["target"]["kind"].as_str().unwrap_or("resource");
+    let name = plan["target"]["name"].as_str().unwrap_or("(unknown)");
+    println!("plan: {operation} {kind} `{name}`");
+    if let Some(changes) = plan["changes"].as_array() {
+        for change in changes {
+            println!(
+                "  {}: {} → {}",
+                change["field"].as_str().unwrap_or("field"),
+                change["from"],
+                change["to"]
+            );
+        }
+    }
+    if let Some(effects) = plan["effects"].as_array() {
+        for effect in effects {
+            println!("  effect: {}", effect["code"].as_str().unwrap_or("change"));
+        }
+    }
+    println!("no changes applied");
+}
+
+async fn resources_list(paths: &Paths, output: Output) -> Result<()> {
+    let config = load_authenticated(paths)?;
+    let server = enrolled_server(&config)?.to_string();
+    let api = ControlPlane::new(&server, config.machine_credential.clone());
+    let listing: ResourceListing = api.get("/api/resources").await?;
+    let daemon_running = paths.daemon_running()?;
+    let remote_ids = listing
+        .resources
+        .iter()
+        .map(|resource| resource.resource_id.clone())
+        .collect::<HashSet<_>>();
+    let resources = listing
+        .resources
+        .iter()
+        .map(|resource| {
+            let local = config
+                .resources
+                .iter()
+                .find(|hosted| hosted.resource_id.to_string() == resource.resource_id);
+            let mut issues = Vec::new();
+            if let Some(hosted) = local {
+                if visibility_str(hosted.visibility) != resource.visibility {
+                    issues.push(serde_json::json!({
+                        "code": "visibility_mismatch",
+                        "local": visibility_str(hosted.visibility),
+                        "remote": resource.visibility,
+                    }));
+                }
+                if resource.kind != "service" {
+                    issues.push(serde_json::json!({ "code": "remote_kind_mismatch" }));
+                }
+            }
+            let state = match (resource.kind.as_str(), local, daemon_running) {
+                ("link", _, _) => "profile_entry",
+                ("service", Some(_), true) => "serving_here",
+                ("service", Some(_), false) => "configured_here",
+                ("service", None, _) => "not_configured_here",
+                _ => "profile_entry",
+            };
+            serde_json::json!({
+                "resource_id": resource.resource_id,
+                "name": resource.name,
+                "kind": resource.kind,
+                "visibility": resource.visibility,
+                "url": resource.url,
+                "folder": resource.folder,
+                "recipients": resource.shares,
+                "local": local.map(|hosted| serde_json::json!({
+                    "configured": true,
+                    "target": hosted.target.to_string(),
+                })),
+                "state": state,
+                "issues": issues,
+            })
+        })
+        .collect::<Vec<_>>();
+    let local_only_services = config
+        .resources
+        .iter()
+        .filter(|hosted| !remote_ids.contains(&hosted.resource_id.to_string()))
+        .map(|hosted| {
+            serde_json::json!({
+                "resource_id": hosted.resource_id.to_string(),
+                "name": hosted.name,
+                "kind": "service",
+                "visibility": visibility_str(hosted.visibility),
+                "target": hosted.target.to_string(),
+                "state": "local_only",
+                "issues": [{ "code": "missing_remote_resource" }],
+            })
+        })
+        .collect::<Vec<_>>();
+
+    if output.json {
+        output.success(
+            "resources.list",
+            serde_json::json!({
+                "server": server,
+                "daemon": daemon_state(daemon_running),
+                "resources": resources,
+                "local_only_services": local_only_services,
+            }),
+        );
+    } else {
+        if resources.is_empty() {
+            println!("no remote resources");
+        }
+        for resource in &resources {
+            println!(
+                "{:<8} {:<18} {:<18} {}",
+                resource["kind"].as_str().unwrap_or("resource"),
+                resource["name"].as_str().unwrap_or(""),
+                resource["visibility"].as_str().unwrap_or(""),
+                resource["state"].as_str().unwrap_or("")
+            );
+        }
+        for resource in &local_only_services {
+            println!(
+                "service  {:<18} {:<18} local_only",
+                resource["name"].as_str().unwrap_or(""),
+                resource["visibility"].as_str().unwrap_or("")
+            );
+        }
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn warn_on_upsert(
     api: &ControlPlane,
@@ -1180,9 +1546,641 @@ fn visibility_str(visibility: Visibility) -> &'static str {
     }
 }
 
+fn push_doctor_check(
+    checks: &mut Vec<serde_json::Value>,
+    counts: &mut [u64; 4],
+    id: &str,
+    status: &str,
+    message: impl Into<String>,
+) {
+    let index = match status {
+        "pass" => 0,
+        "warning" => 1,
+        "failure" => 2,
+        _ => 3,
+    };
+    counts[index] += 1;
+    checks.push(serde_json::json!({
+        "id": id,
+        "status": status,
+        "message": message.into(),
+    }));
+}
+
+#[cfg(unix)]
+fn private_file_permissions(path: &std::path::Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(std::fs::metadata(path)?.mode() & 0o077 == 0)
+}
+
+#[cfg(not(unix))]
+fn private_file_permissions(_path: &std::path::Path) -> Result<bool> {
+    Ok(true)
+}
+
+async fn doctor(paths: &Paths, output: Output) -> Result<()> {
+    let mut checks = Vec::new();
+    let mut actions = Vec::new();
+    let mut counts = [0_u64; 4];
+
+    let config_exists = paths.config().exists();
+    let config = match paths.load_config() {
+        Ok(config) => {
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "config.readable",
+                if config_exists { "pass" } else { "skipped" },
+                if config_exists {
+                    format!("Loaded {}.", paths.config().display())
+                } else {
+                    "No config file exists yet.".to_string()
+                },
+            );
+            config
+        }
+        Err(err) => {
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "config.readable",
+                "failure",
+                format!("{err:#}"),
+            );
+            DaemonConfig::default()
+        }
+    };
+    if paths.config().exists() {
+        match private_file_permissions(&paths.config()) {
+            Ok(true) => push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "config.permissions",
+                "pass",
+                "The credential-bearing config is private.",
+            ),
+            Ok(false) => push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "config.permissions",
+                "failure",
+                "The credential-bearing config is readable by another user.",
+            ),
+            Err(err) => push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "config.permissions",
+                "failure",
+                format!("{err:#}"),
+            ),
+        }
+    } else {
+        push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "config.permissions",
+            "skipped",
+            "No config file exists yet.",
+        );
+    }
+
+    let identity = match std::fs::read(paths.identity()) {
+        Ok(raw) => {
+            let parsed = raw
+                .as_slice()
+                .try_into()
+                .map(iroh::SecretKey::from_bytes)
+                .map_err(|_| anyhow::anyhow!("endpoint key is not 32 bytes"));
+            match parsed {
+                Ok(key) => {
+                    push_doctor_check(
+                        &mut checks,
+                        &mut counts,
+                        "identity.private_key",
+                        "pass",
+                        "The endpoint key is readable and valid.",
+                    );
+                    Some(key)
+                }
+                Err(err) => {
+                    push_doctor_check(
+                        &mut checks,
+                        &mut counts,
+                        "identity.private_key",
+                        "failure",
+                        err.to_string(),
+                    );
+                    None
+                }
+            }
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            let legacy = paths.root.join("identity.key");
+            let message = if legacy.exists() {
+                "A legacy identity.key exists and will migrate on the next login or daemon start."
+            } else {
+                "No endpoint identity exists yet."
+            };
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "identity.private_key",
+                if config.machine_credential.is_some() {
+                    "failure"
+                } else {
+                    "skipped"
+                },
+                message,
+            );
+            None
+        }
+        Err(err) => {
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "identity.private_key",
+                "failure",
+                format!("{err:#}"),
+            );
+            None
+        }
+    };
+    if paths.identity().exists() {
+        match private_file_permissions(&paths.identity()) {
+            Ok(true) => push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "identity.permissions",
+                "pass",
+                "The endpoint key is private.",
+            ),
+            Ok(false) => push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "identity.permissions",
+                "failure",
+                "The endpoint key is readable by another user.",
+            ),
+            Err(err) => push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "identity.permissions",
+                "failure",
+                format!("{err:#}"),
+            ),
+        }
+    }
+
+    let endpoint_id = identity.as_ref().map(|key| key.public().to_string());
+    match (&endpoint_id, std::fs::read_to_string(paths.identity_public())) {
+        (Some(expected), Ok(actual)) if actual.trim() == expected => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "identity.public_key",
+            "pass",
+            "devsite-endpoint.pub matches the endpoint key.",
+        ),
+        (Some(_), Ok(_)) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "identity.public_key",
+            "warning",
+            "devsite-endpoint.pub does not match the endpoint key; login or daemon startup will rewrite it.",
+        ),
+        (Some(_), Err(_)) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "identity.public_key",
+            "warning",
+            "devsite-endpoint.pub is missing; login or daemon startup will create it.",
+        ),
+        (None, _) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "identity.public_key",
+            "skipped",
+            "No valid endpoint key is available for comparison.",
+        ),
+    }
+
+    let daemon_running = paths.daemon_running()?;
+    let daemon_status = if daemon_running || config.resources.is_empty() {
+        "pass"
+    } else {
+        "warning"
+    };
+    push_doctor_check(
+        &mut checks,
+        &mut counts,
+        "daemon.local",
+        daemon_status,
+        if daemon_running {
+            "The local daemon is running.".to_string()
+        } else if config.resources.is_empty() {
+            "The local daemon is stopped and no services are configured.".to_string()
+        } else {
+            format!(
+                "The local daemon is stopped while {} service(s) are configured.",
+                config.resources.len()
+            )
+        },
+    );
+    if !daemon_running && !config.resources.is_empty() {
+        actions.push(serde_json::json!({
+            "id": "start-daemon",
+            "priority": 1,
+            "reason": "configured_services_not_served",
+            "commands": daemon_start_commands(),
+            "mutates": "local_process",
+            "requires_user_input": false,
+        }));
+    }
+
+    let Some(server) = config.server_url.as_deref() else {
+        push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "server.reachable",
+            "skipped",
+            "No control plane is configured.",
+        );
+        actions.push(serde_json::json!({
+            "id": "login",
+            "priority": 1,
+            "reason": "not_enrolled",
+            "commands": [["devsite", "login", "TICKET"]],
+            "mutates": "local_and_remote_identity",
+            "requires_user_input": true,
+        }));
+        return write_doctor_report(output, checks, counts, actions);
+    };
+    let public = ControlPlane::new(server, None);
+    let public_config: PublicConfig = match public.get::<PublicConfig>("/api/config").await {
+        Ok(config) => {
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "server.reachable",
+                "pass",
+                format!("Reached {server} (server {}).", config.server_version),
+            );
+            config
+        }
+        Err(err) => {
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "server.reachable",
+                "failure",
+                format!("{err:#}"),
+            );
+            return write_doctor_report(output, checks, counts, actions);
+        }
+    };
+    push_doctor_check(
+        &mut checks,
+        &mut counts,
+        "server.api_compatible",
+        if public_config.api_version == 3 {
+            "pass"
+        } else {
+            "failure"
+        },
+        format!(
+            "Server API version is {} (CLI expects 3).",
+            public_config.api_version
+        ),
+    );
+    let cli_compatible = validate_cli_version(
+        &public_config.minimum_cli_version,
+        env!("CARGO_PKG_VERSION"),
+    );
+    let cli_is_compatible = cli_compatible.is_ok();
+    let cli_compatibility_message = match &cli_compatible {
+        Ok(()) => format!(
+            "CLI {} meets the server minimum {}.",
+            env!("CARGO_PKG_VERSION"),
+            public_config.minimum_cli_version
+        ),
+        Err(err) => err.to_string(),
+    };
+    push_doctor_check(
+        &mut checks,
+        &mut counts,
+        "server.cli_compatible",
+        if cli_is_compatible { "pass" } else { "failure" },
+        cli_compatibility_message,
+    );
+    if !cli_is_compatible {
+        actions.push(serde_json::json!({
+            "id": "upgrade-cli",
+            "priority": 1,
+            "reason": "cli_below_server_minimum",
+            "commands": upgrade_commands(),
+            "mutates": "installed_binary",
+            "requires_user_input": false,
+        }));
+    }
+    let expected_protocol = String::from_utf8_lossy(devsite_proto::ALPN);
+    push_doctor_check(
+        &mut checks,
+        &mut counts,
+        "server.daemon_protocol",
+        if public_config.daemon_protocol == expected_protocol {
+            "pass"
+        } else {
+            "failure"
+        },
+        format!(
+            "Server daemon protocol is {}.",
+            public_config.daemon_protocol
+        ),
+    );
+
+    match public.get::<PubKeyResponse>("/api/pubkey").await {
+        Ok(remote) => {
+            let matches = config.control_plane_key.as_deref() == Some(remote.public_key.as_str());
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "server.signing_key_matches",
+                if matches { "pass" } else { "failure" },
+                if matches {
+                    "The server signing key matches the key pinned at login."
+                } else {
+                    "The server signing key differs from the key pinned at login; verify the control-plane origin before logging in again."
+                },
+            );
+            if !matches {
+                actions.push(serde_json::json!({
+                    "id": "verify-signing-key-change",
+                    "priority": 1,
+                    "reason": "server_signing_key_changed",
+                    "commands": [["devsite", "login", "TICKET"]],
+                    "mutates": "pinned_trust_and_machine_credential",
+                    "requires_user_input": true,
+                }));
+            }
+        }
+        Err(err) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "server.signing_key_matches",
+            "failure",
+            format!("{err:#}"),
+        ),
+    }
+    match config.verifying_key() {
+        Ok(_) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "config.signing_key",
+            "pass",
+            "The pinned signing key is valid Ed25519 material.",
+        ),
+        Err(err) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "config.signing_key",
+            "failure",
+            format!("{err:#}"),
+        ),
+    }
+
+    let Some(credential) = config.machine_credential.clone() else {
+        push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "auth.credential_valid",
+            "failure",
+            "No machine credential is configured.",
+        );
+        actions.push(serde_json::json!({
+            "id": "login",
+            "priority": 1,
+            "reason": "machine_credential_missing",
+            "commands": [["devsite", "login", "TICKET"]],
+            "mutates": "local_and_remote_identity",
+            "requires_user_input": true,
+        }));
+        return write_doctor_report(output, checks, counts, actions);
+    };
+    let api = ControlPlane::new(server, Some(credential));
+    match api.get::<MeResponse>("/api/me").await {
+        Ok(me) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "auth.credential_valid",
+            "pass",
+            format!(
+                "The machine credential is valid for @{}.",
+                me.handle.as_deref().unwrap_or("(no handle)")
+            ),
+        ),
+        Err(err) => {
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "auth.credential_valid",
+                "failure",
+                format!("{err:#}"),
+            );
+            actions.push(serde_json::json!({
+                "id": "login",
+                "priority": 1,
+                "reason": "machine_credential_invalid",
+                "commands": [["devsite", "login", "TICKET"]],
+                "mutates": "local_and_remote_identity",
+                "requires_user_input": true,
+            }));
+            return write_doctor_report(output, checks, counts, actions);
+        }
+    }
+
+    match api.get::<DaemonInfo>("/api/daemon").await {
+        Ok(info) => {
+            let bound_matches =
+                endpoint_id.as_deref() == Some(info.credential_endpoint_id.as_str());
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "identity.credential_binding",
+                if bound_matches { "pass" } else { "failure" },
+                if bound_matches {
+                    "The machine credential is bound to this endpoint identity."
+                } else {
+                    "The machine credential is bound to a different endpoint identity."
+                },
+            );
+            let registered_matches_local =
+                info.registered_endpoint_id.as_deref() == endpoint_id.as_deref();
+            let registration_status = if info.registered_endpoint_id.is_none() {
+                if config.resources.is_empty() {
+                    "pass"
+                } else {
+                    "warning"
+                }
+            } else if registered_matches_local {
+                "pass"
+            } else if daemon_running {
+                "failure"
+            } else {
+                "warning"
+            };
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "daemon.registration",
+                registration_status,
+                match info.registered_endpoint_id {
+                    None => "No daemon endpoint has been registered yet.".to_string(),
+                    Some(ref registered) if Some(registered.as_str()) == endpoint_id.as_deref() => {
+                        "The account is registered to this endpoint identity.".to_string()
+                    }
+                    Some(registered) if info.registration_matches_credential => format!(
+                        "The account is registered to the credential endpoint ({registered}), but that is not this machine's local identity."
+                    ),
+                    Some(registered) => format!(
+                        "The account is registered to another endpoint identity ({registered})."
+                    ),
+                },
+            );
+            if bound_matches && !registered_matches_local && !config.resources.is_empty() {
+                actions.push(serde_json::json!({
+                    "id": "register-this-endpoint",
+                    "priority": 2,
+                    "reason": "account_registered_to_another_endpoint",
+                    "commands": daemon_start_commands(),
+                    "mutates": "account_daemon_registration",
+                    "requires_user_input": true,
+                }));
+            }
+        }
+        Err(err) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "identity.credential_binding",
+            "failure",
+            format!("{err:#}"),
+        ),
+    }
+
+    match api.get::<ResourceListing>("/api/resources").await {
+        Ok(listing) => {
+            let remote = listing
+                .resources
+                .iter()
+                .map(|resource| resource.resource_id.as_str())
+                .collect::<HashSet<_>>();
+            let local_only = config
+                .resources
+                .iter()
+                .filter(|resource| !remote.contains(resource.resource_id.to_string().as_str()))
+                .map(|resource| resource.name.clone())
+                .collect::<Vec<_>>();
+            let visibility_mismatches = config
+                .resources
+                .iter()
+                .filter_map(|local| {
+                    listing
+                        .resources
+                        .iter()
+                        .find(|remote| remote.resource_id == local.resource_id.to_string())
+                        .filter(|remote| remote.visibility != visibility_str(local.visibility))
+                        .map(|_| local.name.clone())
+                })
+                .collect::<Vec<_>>();
+            let reconciled = local_only.is_empty() && visibility_mismatches.is_empty();
+            push_doctor_check(
+                &mut checks,
+                &mut counts,
+                "resources.reconciled",
+                if reconciled { "pass" } else { "warning" },
+                if reconciled {
+                    "Every local service mapping has a remote resource.".to_string()
+                } else {
+                    format!(
+                        "Local-only services: {}; visibility mismatches: {}.",
+                        if local_only.is_empty() {
+                            "none".to_string()
+                        } else {
+                            local_only.join(", ")
+                        },
+                        if visibility_mismatches.is_empty() {
+                            "none".to_string()
+                        } else {
+                            visibility_mismatches.join(", ")
+                        }
+                    )
+                },
+            );
+            for name in local_only {
+                actions.push(serde_json::json!({
+                    "id": format!("remove-local-only-{name}"),
+                    "priority": 2,
+                    "reason": "missing_remote_resource",
+                    "commands": [["devsite", "service", "remove", name]],
+                    "mutates": "local_config",
+                    "requires_user_input": false,
+                }));
+            }
+        }
+        Err(err) => push_doctor_check(
+            &mut checks,
+            &mut counts,
+            "resources.reconciled",
+            "failure",
+            format!("{err:#}"),
+        ),
+    }
+
+    write_doctor_report(output, checks, counts, actions)
+}
+
+fn write_doctor_report(
+    output: Output,
+    checks: Vec<serde_json::Value>,
+    counts: [u64; 4],
+    actions: Vec<serde_json::Value>,
+) -> Result<()> {
+    let report = serde_json::json!({
+        "healthy": counts[2] == 0,
+        "summary": {
+            "pass": counts[0],
+            "warning": counts[1],
+            "failure": counts[2],
+            "skipped": counts[3],
+        },
+        "checks": checks,
+        "actions": actions,
+    });
+    if output.json {
+        output.success("doctor", report);
+    } else {
+        println!(
+            "doctor: {} pass, {} warning, {} failure, {} skipped",
+            counts[0], counts[1], counts[2], counts[3]
+        );
+        for check in report["checks"].as_array().unwrap_or(&Vec::new()) {
+            println!(
+                "  {:<7} {:<32} {}",
+                check["status"].as_str().unwrap_or("unknown"),
+                check["id"].as_str().unwrap_or("check"),
+                check["message"].as_str().unwrap_or("")
+            );
+        }
+    }
+    Ok(())
+}
+
 fn status(paths: &Paths, output: Output) -> Result<()> {
     let config = paths.load_config()?;
     let daemon_running = paths.daemon_running()?;
+    let endpoint_id = std::fs::read_to_string(paths.identity_public())
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
     if output.json {
         let services = config
             .resources
@@ -1201,6 +2199,13 @@ fn status(paths: &Paths, output: Output) -> Result<()> {
             serde_json::json!({
                 "config_path": paths.config(),
                 "identity_path": paths.identity(),
+                "identity": {
+                    "public_path": paths.identity_public(),
+                    "endpoint_id": endpoint_id,
+                },
+                "authentication": {
+                    "configured": config.machine_credential.is_some(),
+                },
                 "server": config.server_url,
                 "control_plane_key": config.control_plane_key,
                 "daemon": daemon_state(daemon_running),
@@ -1298,6 +2303,37 @@ fn daemon_start_hints() -> &'static [&'static str] {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn daemon_start_hints() -> &'static [&'static str] {
     &["keep `devsite daemon run` alive with your service manager"]
+}
+
+#[cfg(target_os = "macos")]
+fn daemon_start_commands() -> serde_json::Value {
+    serde_json::json!([
+        ["brew", "services", "start", "devsite"],
+        ["devsite", "daemon", "run"]
+    ])
+}
+
+#[cfg(target_os = "linux")]
+fn daemon_start_commands() -> serde_json::Value {
+    serde_json::json!([
+        ["systemctl", "--user", "enable", "--now", "devsite.service"],
+        ["devsite", "daemon", "run"]
+    ])
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn daemon_start_commands() -> serde_json::Value {
+    serde_json::json!([["devsite", "daemon", "run"]])
+}
+
+#[cfg(target_os = "macos")]
+fn upgrade_commands() -> serde_json::Value {
+    serde_json::json!([["brew", "upgrade", "devsite"]])
+}
+
+#[cfg(not(target_os = "macos"))]
+fn upgrade_commands() -> serde_json::Value {
+    serde_json::json!([])
 }
 
 async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
