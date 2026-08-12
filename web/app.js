@@ -567,8 +567,9 @@ function renderSignedOut() {
         </header>
         <div>
           <i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i>
-          <ol aria-label="A host publishes as an endpoint. An approved user redeems a one-use ticket into a client-bound session, requests a signed capability for each connection, then opens an end-to-end encrypted Iroh QUIC stream to the host service.">
-            <li><span>publish endpoint id</span></li>
+          <ol aria-label="A host proves control of and registers its bound endpoint, then receives current service authorizations from dev.site. An approved user redeems a one-use ticket into a client-bound session, requests a signed capability for each connection, then opens an end-to-end encrypted Iroh QUIC stream to the host service.">
+            <li><span>prove + register bound endpoint</span></li>
+            <li><span>sync authorization snapshot</span></li>
             <li><span>redeem one-use ticket + client key</span></li>
             <li><span>client-bound session</span></li>
             <li><span>request one-stream capability</span></li>

@@ -302,7 +302,7 @@ main > article:has(> .sequence) h1 {
 }
 .sequence > div {
   position: relative;
-  height: 19rem;
+  height: 21.5rem;
 }
 .sequence > div > i {
   position: absolute;
@@ -353,46 +353,52 @@ main > article:has(> .sequence) h1 {
 .sequence li:nth-child(2),
 .sequence li:nth-child(3),
 .sequence li:nth-child(4),
-.sequence li:nth-child(5) {
+.sequence li:nth-child(5),
+.sequence li:nth-child(6) {
   left: 50%;
   width: 33.333%;
 }
 .sequence li:nth-child(1) {
-  top: 2.3rem;
+  top: 2.1rem;
   left: 16.667%;
 }
 .sequence li:nth-child(2) {
-  top: 5rem;
+  top: 4.8rem;
+  left: 16.667%;
 }
 .sequence li:nth-child(3) {
-  top: 7.7rem;
+  top: 7.5rem;
 }
 .sequence li:nth-child(4) {
-  top: 10.4rem;
+  top: 10.2rem;
 }
 .sequence li:nth-child(5) {
-  top: 13.1rem;
+  top: 12.9rem;
 }
 .sequence li:nth-child(6) {
-  top: 16rem;
+  top: 15.6rem;
+}
+.sequence li:nth-child(7) {
+  top: 18.5rem;
   left: 16.667%;
   width: 66.666%;
   border-top-style: dashed;
   animation: sequence-flow 1.4s ease-in-out infinite alternate;
 }
 .sequence li:nth-child(1)::after,
-.sequence li:nth-child(3)::after,
-.sequence li:nth-child(5)::after {
+.sequence li:nth-child(4)::after,
+.sequence li:nth-child(6)::after {
   right: -0.05rem;
   border-left: 0.42rem solid var(--pico-primary);
 }
 .sequence li:nth-child(2)::after,
-.sequence li:nth-child(4)::after,
-.sequence li:nth-child(6)::after {
+.sequence li:nth-child(3)::after,
+.sequence li:nth-child(5)::after,
+.sequence li:nth-child(7)::after {
   left: -0.05rem;
   border-right: 0.42rem solid var(--pico-primary);
 }
-.sequence li:nth-child(6)::before {
+.sequence li:nth-child(7)::before {
   position: absolute;
   top: -0.28rem;
   right: -0.05rem;
@@ -406,7 +412,7 @@ main > article:has(> .sequence) h1 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .sequence li:nth-child(6) {
+  .sequence li:nth-child(7) {
     animation: none;
   }
 }
