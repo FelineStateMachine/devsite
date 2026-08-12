@@ -6,11 +6,12 @@ use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use devsite_proto::access_plan::ServiceGrantPlanClaims;
 use devsite_proto::capability::KeyBytes;
 use devsite_proto::{AccountId, ResourceId};
 use serde::{Deserialize, Serialize};
@@ -103,6 +104,9 @@ impl ApiError {
     }
     fn unauthorized() -> Self {
         Self(StatusCode::UNAUTHORIZED, "sign in first".into())
+    }
+    fn forbidden(message: impl Into<String>) -> Self {
+        Self(StatusCode::FORBIDDEN, message.into())
     }
     fn too_many_requests() -> Self {
         Self(
@@ -314,6 +318,33 @@ pub struct ProfileSettingsRequest {
 #[derive(Deserialize)]
 pub struct CreateMachineCredentialRequest {
     pub name: String,
+    #[serde(default)]
+    pub scopes: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ServiceGrantRequestEnvelope {
+    pub schema_version: u32,
+    pub request_id: String,
+    pub service: String,
+    pub requester_endpoint_id: String,
+    pub expires_at: u64,
+    pub proof: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceGrantIssueRequest {
+    pub request: ServiceGrantRequestEnvelope,
+    pub resource_id: String,
+    pub expires_at: u64,
+    pub broker_proof: String,
+    #[serde(default)]
+    pub approved_plan: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ServiceSearchQuery {
+    pub keyword: String,
 }
 
 #[derive(Serialize)]
@@ -426,8 +457,14 @@ pub fn router(state: Shared) -> Router {
         .route("/api/profile/{handle}", get(profile))
         .route("/api/services/{id}/ticket", post(create_connection_ticket))
         .route("/api/tickets/redeem", post(redeem_connection_ticket))
-        .route("/api/tunnel/session", delete(delete_tunnel_session))
+        .route(
+            "/api/tunnel/session",
+            get(tunnel_session_info).delete(delete_tunnel_session),
+        )
         .route("/api/tunnel/capability", post(tunnel_capability))
+        .route("/api/access/services", get(accessible_services))
+        .route("/api/access/grants/plan", post(plan_service_grant))
+        .route("/api/access/grants", post(issue_service_grant))
         .with_state(state)
 }
 
@@ -1203,20 +1240,25 @@ async fn enroll_machine(
 fn verify_endpoint_proof(endpoint_id: &str, proof: &str) -> ApiResult<()> {
     let endpoint = parse_endpoint_id(endpoint_id)
         .ok_or_else(|| ApiError::bad_request("endpoint_id is not a 32 byte Ed25519 key"))?;
+    verify_endpoint_signature(
+        &endpoint,
+        proof,
+        &devsite_proto::machine_endpoint_proof_message(&endpoint),
+    )
+}
+
+fn verify_endpoint_signature(endpoint: &KeyBytes, proof: &str, message: &[u8]) -> ApiResult<()> {
     let signature = data_encoding::BASE64URL_NOPAD
         .decode(proof.as_bytes())
         .map_err(|_| ApiError::bad_request("endpoint proof is not base64url"))?;
     let signature: [u8; 64] = signature
         .try_into()
         .map_err(|_| ApiError::bad_request("endpoint proof is not a 64 byte signature"))?;
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&endpoint)
+    let key = ed25519_dalek::VerifyingKey::from_bytes(endpoint)
         .map_err(|_| ApiError::bad_request("endpoint_id is not a valid Ed25519 key"))?;
     use ed25519_dalek::Verifier;
-    key.verify(
-        &devsite_proto::machine_endpoint_proof_message(&endpoint),
-        &ed25519_dalek::Signature::from_bytes(&signature),
-    )
-    .map_err(|_| ApiError::bad_request("endpoint proof did not verify"))
+    key.verify(message, &ed25519_dalek::Signature::from_bytes(&signature))
+        .map_err(|_| ApiError::bad_request("endpoint proof did not verify"))
 }
 
 // -- dashboard ---------------------------------------------------------------
@@ -1250,6 +1292,7 @@ async fn set_profile_settings(
 
 const MAX_MACHINE_CREDENTIALS: usize = 10;
 const MAX_MACHINE_NAME: usize = 60;
+const SERVICE_GRANT_SCOPE: &str = "service_grants:issue";
 
 fn validate_machine_name(name: &str) -> ApiResult<&str> {
     if name.trim() != name || name.is_empty() {
@@ -1285,6 +1328,7 @@ async fn list_machine_credentials(
             "last_used_at": credential.last_used_at,
             "endpoint_id": credential.endpoint_id,
             "enrolled_at": credential.enrolled_at,
+            "scopes": credential.scopes,
         })).collect::<Vec<_>>()
     })))
 }
@@ -1297,6 +1341,14 @@ async fn create_machine_credential(
     let account = require_browser_account(&state, &headers)?;
     check_rate(&state, account, RateClass::Credential)?;
     let name = validate_machine_name(&body.name)?;
+    let mut scopes = body.scopes;
+    scopes.sort();
+    scopes.dedup();
+    if scopes.iter().any(|scope| scope != SERVICE_GRANT_SCOPE) {
+        return Err(ApiError::bad_request(format!(
+            "the only supported machine scope is `{SERVICE_GRANT_SCOPE}`"
+        )));
+    }
     let ticket = auth::generate_machine_ticket();
     let id = auth::generate_machine_credential_id();
     let now = now_secs();
@@ -1311,7 +1363,7 @@ async fn create_machine_credential(
             "an account may have at most {MAX_MACHINE_CREDENTIALS} active machine credentials"
         )));
     }
-    db.create_machine_credential(&id, account, name, &auth::hash_token(&ticket), now)
+    db.create_machine_credential(&id, account, name, &auth::hash_token(&ticket), &scopes, now)
         .map_err(ApiError::internal)?;
     Ok((
         StatusCode::CREATED,
@@ -1321,6 +1373,7 @@ async fn create_machine_credential(
                 "name": name,
                 "created_at": now,
                 "last_used_at": null,
+                "scopes": scopes,
             },
             "ticket": ticket,
         })),
@@ -1496,8 +1549,274 @@ fn to_entry(resource: &crate::db::Resource, owner_handle: Option<String>) -> Pro
 
 const CONNECTION_TICKET_LIFETIME_SECS: u64 = 2 * 60;
 const TUNNEL_SESSION_LIFETIME_SECS: u64 = 8 * 60 * 60;
+const SERVICE_GRANT_REQUEST_LIFETIME_SECS: u64 = 10 * 60;
+const SERVICE_GRANT_MAX_LIFETIME_SECS: u64 = 15 * 60;
+const MAX_ACTIVE_BROKER_GRANTS: usize = 32;
 const CONNECTION_TICKET_PREFIX: &str = "dst_";
 const TUNNEL_SESSION_PREFIX: &str = "dss_";
+
+async fn accessible_services(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Query(query): Query<ServiceSearchQuery>,
+) -> ApiResult<impl IntoResponse> {
+    let machine = require_machine(&state, &headers)?;
+    require_service_grant_scope(&machine)?;
+    let keyword = query.keyword.trim();
+    if keyword.is_empty() || keyword.chars().count() > MAX_RESOURCE_NAME {
+        return Err(ApiError::bad_request("keyword must be 1 to 80 characters"));
+    }
+    let needle = keyword.to_lowercase();
+    let db = state.db.lock().unwrap();
+    let services = db
+        .accessible_services(machine.account.id)
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .filter(|(resource, owner)| {
+            resource.name.to_lowercase().contains(&needle)
+                || owner
+                    .as_deref()
+                    .is_some_and(|handle| handle.to_lowercase().contains(&needle))
+        })
+        .map(|(resource, owner_handle)| {
+            serde_json::json!({
+                "resource_id": resource.id.to_string(),
+                "name": resource.name,
+                "owner_handle": owner_handle,
+                "visibility": resource.visibility.as_str(),
+                "exact_name_match": resource.name.eq_ignore_ascii_case(keyword),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(Json(serde_json::json!({
+        "keyword": keyword,
+        "services": services,
+    })))
+}
+
+async fn plan_service_grant(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<ServiceGrantIssueRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let machine = require_machine(&state, &headers)?;
+    require_service_grant_scope(&machine)?;
+    let now = now_secs();
+    let db = state.db.lock().unwrap();
+    let (resource, owner_handle, claims) = validate_service_grant(&db, &machine, &body, now)?;
+    let approved_plan = state
+        .issuer
+        .issue_access_plan(&claims)
+        .map_err(ApiError::internal)?;
+    Ok(Json(service_grant_plan(
+        &machine,
+        &body,
+        &resource,
+        owner_handle.as_deref(),
+        &approved_plan,
+    )))
+}
+
+async fn issue_service_grant(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<ServiceGrantIssueRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let machine = require_machine(&state, &headers)?;
+    require_service_grant_scope(&machine)?;
+    check_rate(&state, machine.account.id, RateClass::Capability)?;
+    let now = now_secs();
+    let token = prefixed_token(TUNNEL_SESSION_PREFIX);
+    let (resource, owner_handle) = {
+        let db = state.db.lock().unwrap();
+        let (resource, owner_handle, claims) = validate_service_grant(&db, &machine, &body, now)?;
+        let approved_plan = body
+            .approved_plan
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("an approved plan token is required"))?;
+        let approved_claims = state
+            .issuer
+            .verify_access_plan(approved_plan)
+            .map_err(|_| ApiError::bad_request("approved plan token did not verify"))?;
+        if approved_claims != claims {
+            return Err(ApiError::bad_request(
+                "approved plan does not match this grant request",
+            ));
+        }
+        if db
+            .active_broker_grant_count(&machine.credential_id, now)
+            .map_err(ApiError::internal)?
+            >= MAX_ACTIVE_BROKER_GRANTS
+        {
+            return Err(ApiError::too_many_requests());
+        }
+        if !db
+            .create_broker_tunnel_session(
+                &auth::hash_token(&token),
+                machine.account.id,
+                resource.id,
+                &body.request.requester_endpoint_id,
+                &machine.credential_id,
+                &body.request.request_id,
+                now,
+                body.expires_at,
+            )
+            .map_err(ApiError::internal)?
+        {
+            return Err(ApiError::bad_request(
+                "this service grant request was already used",
+            ));
+        }
+        (resource, owner_handle)
+    };
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({
+            "grant": token,
+            "request_id": body.request.request_id,
+            "resource_id": resource.id.to_string(),
+            "name": resource.name,
+            "owner_id": resource.owner_id.to_string(),
+            "owner_handle": owner_handle,
+            "requester_endpoint_id": body.request.requester_endpoint_id,
+            "expires_at": body.expires_at,
+        })),
+    ))
+}
+
+fn require_service_grant_scope(machine: &MachineAuthentication) -> ApiResult<()> {
+    if machine
+        .scopes
+        .iter()
+        .any(|scope| scope == SERVICE_GRANT_SCOPE)
+    {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(format!(
+            "this machine credential lacks `{SERVICE_GRANT_SCOPE}`"
+        )))
+    }
+}
+
+fn validate_service_grant(
+    db: &Db,
+    machine: &MachineAuthentication,
+    body: &ServiceGrantIssueRequest,
+    now: u64,
+) -> ApiResult<(crate::db::Resource, Option<String>, ServiceGrantPlanClaims)> {
+    let request = &body.request;
+    if request.schema_version != 1 {
+        return Err(ApiError::bad_request(
+            "unsupported service grant request version",
+        ));
+    }
+    if !valid_grant_request_id(&request.request_id) {
+        return Err(ApiError::bad_request("invalid service grant request id"));
+    }
+    if request.service.trim() != request.service
+        || request.service.is_empty()
+        || request.service.chars().count() > MAX_RESOURCE_NAME
+    {
+        return Err(ApiError::bad_request("invalid requested service keyword"));
+    }
+    if request.expires_at <= now
+        || request.expires_at > now.saturating_add(SERVICE_GRANT_REQUEST_LIFETIME_SECS)
+    {
+        return Err(ApiError::bad_request(
+            "service grant request is expired or too long-lived",
+        ));
+    }
+    if body.expires_at <= now
+        || body.expires_at > now.saturating_add(SERVICE_GRANT_MAX_LIFETIME_SECS)
+    {
+        return Err(ApiError::bad_request(
+            "service grant lifetime must be at most 15 minutes",
+        ));
+    }
+
+    let requester = parse_endpoint_id(&request.requester_endpoint_id)
+        .ok_or_else(|| ApiError::bad_request("requester endpoint id is invalid"))?;
+    let request_message = devsite_proto::service_grant_request_message(
+        &request.request_id,
+        &request.service,
+        &requester,
+        request.expires_at,
+    );
+    verify_endpoint_signature(&requester, &request.proof, &request_message)?;
+
+    let resource_id = ResourceId::from_str(&body.resource_id).map_err(|_| ApiError::not_found())?;
+    let needle = request.service.to_lowercase();
+    let resource = db
+        .accessible_services(machine.account.id)
+        .map_err(ApiError::internal)?
+        .into_iter()
+        .find(|(resource, owner)| {
+            resource.id == resource_id
+                && (resource.name.to_lowercase().contains(&needle)
+                    || owner
+                        .as_deref()
+                        .is_some_and(|handle| handle.to_lowercase().contains(&needle)))
+        })
+        .ok_or_else(ApiError::not_found)?;
+
+    let broker = parse_endpoint_id(&machine.endpoint_id)
+        .ok_or_else(|| ApiError::internal(anyhow::anyhow!("broker endpoint id is invalid")))?;
+    let issue_message = devsite_proto::service_grant_issue_message(
+        &request.request_id,
+        &body.resource_id,
+        &requester,
+        body.expires_at,
+    );
+    verify_endpoint_signature(&broker, &body.broker_proof, &issue_message)?;
+    let claims = ServiceGrantPlanClaims {
+        schema_version: request.schema_version,
+        issuer_credential_id: machine.credential_id.clone(),
+        request_id: request.request_id.clone(),
+        service: request.service.clone(),
+        resource_id: body.resource_id.clone(),
+        requester_endpoint_id: request.requester_endpoint_id.clone(),
+        request_expires_at: request.expires_at,
+        grant_expires_at: body.expires_at,
+    };
+    Ok((resource.0, resource.1, claims))
+}
+
+fn service_grant_plan(
+    machine: &MachineAuthentication,
+    body: &ServiceGrantIssueRequest,
+    resource: &crate::db::Resource,
+    owner_handle: Option<&str>,
+    approved_plan: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "action": "issue_service_grant",
+        "request_id": body.request.request_id,
+        "requested_service": body.request.service,
+        "resource": {
+            "resource_id": resource.id.to_string(),
+            "name": resource.name,
+            "owner_id": resource.owner_id.to_string(),
+            "owner_handle": owner_handle,
+        },
+        "requester_endpoint_id": body.request.requester_endpoint_id,
+        "issuer_credential_id": machine.credential_id,
+        "expires_at": body.expires_at,
+        "approved_plan": approved_plan,
+        "effects": [
+            "create_endpoint_bound_tunnel_session",
+            "invalidate_session_when_broker_credential_is_revoked",
+        ],
+    })
+}
+
+fn valid_grant_request_id(value: &str) -> bool {
+    value.starts_with("agr_")
+        && (12..=100).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
 
 /// Mint a short-lived, single-use bootstrap ticket from an authenticated browser.
 async fn create_connection_ticket(
@@ -1682,6 +2001,46 @@ async fn tunnel_capability(
     }))
 }
 
+async fn tunnel_session_info(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    let token = bearer_token(&headers).ok_or_else(invalid_tunnel_session)?;
+    if !valid_prefixed_token(&token, TUNNEL_SESSION_PREFIX) {
+        return Err(invalid_tunnel_session());
+    }
+    let now = now_secs();
+    let db = state.db.lock().unwrap();
+    let session = db
+        .tunnel_session(&auth::hash_token(&token), now)
+        .map_err(ApiError::internal)?
+        .ok_or_else(invalid_tunnel_session)?;
+    let resource = db
+        .resource(session.resource_id)
+        .map_err(ApiError::internal)?
+        .ok_or_else(invalid_tunnel_session)?;
+    let shared_with = db
+        .shared_with(session.resource_id)
+        .map_err(ApiError::internal)?;
+    if resource.kind != ResourceKind::Service
+        || !can_view(
+            Some(session.viewer_id),
+            resource.owner_id,
+            resource.visibility,
+            &shared_with,
+        )
+    {
+        return Err(invalid_tunnel_session());
+    }
+    Ok(Json(serde_json::json!({
+        "resource_id": resource.id.to_string(),
+        "name": resource.name,
+        "requester_endpoint_id": session.client_endpoint_id,
+        "expires_at": session.expires_at,
+        "brokered": session.issuer_credential_id.is_some(),
+    })))
+}
+
 async fn delete_tunnel_session(
     State(state): State<Shared>,
     headers: HeaderMap,
@@ -1783,6 +2142,81 @@ mod tests {
         let forged = attacker.sign(&devsite_proto::machine_endpoint_proof_message(&endpoint));
         let forged = data_encoding::BASE64URL_NOPAD.encode(&forged.to_bytes());
         assert!(verify_endpoint_proof(&endpoint_id, &forged).is_err());
+    }
+
+    #[test]
+    fn broker_grants_require_both_endpoint_signatures_and_matching_service_intent() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let mut db = Db::open_in_memory().unwrap();
+        let account = db.upsert_account("test", "broker", 0).unwrap();
+        db.set_handle(account.id, "broker").unwrap();
+        let resource = db
+            .create_resource(
+                account.id,
+                "postgres-primary",
+                ResourceKind::Service,
+                Visibility::Private,
+                None,
+                None,
+                0,
+            )
+            .unwrap();
+        let broker_key = SigningKey::from_bytes(&[11; 32]);
+        let requester_key = SigningKey::from_bytes(&[12; 32]);
+        let broker_endpoint = broker_key.verifying_key().to_bytes();
+        let requester_endpoint = requester_key.verifying_key().to_bytes();
+        let request_id = "agr_1234567890";
+        let request_expires = 500;
+        let grant_expires = 700;
+        let request_message = devsite_proto::service_grant_request_message(
+            request_id,
+            "postgres",
+            &requester_endpoint,
+            request_expires,
+        );
+        let issue_message = devsite_proto::service_grant_issue_message(
+            request_id,
+            &resource.to_string(),
+            &requester_endpoint,
+            grant_expires,
+        );
+        let request = ServiceGrantRequestEnvelope {
+            schema_version: 1,
+            request_id: request_id.into(),
+            service: "postgres".into(),
+            requester_endpoint_id: data_encoding::HEXLOWER.encode(&requester_endpoint),
+            expires_at: request_expires,
+            proof: data_encoding::BASE64URL_NOPAD
+                .encode(&requester_key.sign(&request_message).to_bytes()),
+        };
+        let machine = MachineAuthentication {
+            account,
+            credential_id: "machine_broker".into(),
+            endpoint_id: data_encoding::HEXLOWER.encode(&broker_endpoint),
+            scopes: vec![SERVICE_GRANT_SCOPE.into()],
+        };
+        let body = ServiceGrantIssueRequest {
+            request,
+            resource_id: resource.to_string(),
+            expires_at: grant_expires,
+            broker_proof: data_encoding::BASE64URL_NOPAD
+                .encode(&broker_key.sign(&issue_message).to_bytes()),
+            approved_plan: None,
+        };
+
+        assert!(require_service_grant_scope(&machine).is_ok());
+        let (validated, _, plan_claims) =
+            validate_service_grant(&db, &machine, &body, 100).unwrap();
+        assert_eq!(validated.id, resource);
+        assert_eq!(plan_claims.issuer_credential_id, "machine_broker");
+        assert_eq!(plan_claims.request_id, request_id);
+        assert_eq!(plan_claims.resource_id, resource.to_string());
+        assert_eq!(plan_claims.grant_expires_at, grant_expires);
+
+        let mut wrong_intent = body;
+        wrong_intent.request.service = "redis".into();
+        assert!(validate_service_grant(&db, &machine, &wrong_intent, 100).is_err());
     }
 
     #[test]

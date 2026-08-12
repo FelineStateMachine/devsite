@@ -52,3 +52,28 @@ a command failure. The envelope remains `ok: true` when the report was produced;
 file permissions, server/API compatibility, the pinned signing key, credential binding,
 daemon registration, and remote/local resource drift. It does not open connections to
 hosted services.
+
+## Brokered access
+
+`devsite access request SERVICE --request FILE --key FILE --json` creates a public signed
+request and a separate private requester endpoint key. Its result contains
+`request`, `request_path`, `key_path`, and `handoff: "share_request_only"`. The request
+object has schema version, request id, signed service keyword, requester endpoint id, expiry,
+and proof. The two paths must differ and must not exist.
+
+`devsite access resolve KEYWORD --json` requires a machine credential enrolled with the
+`service_grants:issue` scope. It returns matching accessible services with resource id,
+name, optional owner handle, and exact-name-match state.
+
+`devsite access grant --request FILE --plan --json` validates and resolves the signed
+request without issuing a grant. If resolution is ambiguous, supply an approved
+`--resource res_…`. The plan returns a server-signed `approved_plan` token covering the
+exact broker credential, request, resource, endpoint, and expiry. Apply with
+`--approved-plan dsp_…`; changed inputs are rejected. A successful apply returns the request
+id, resource id, name and owner, requester endpoint id, expiry, short-lived `dss_…` grant,
+and `server`. Treat the grant as a secret and return only the grant and server to the
+requester.
+
+`devsite access connect GRANT --key FILE --json` is resident NDJSON. It validates that the
+grant is broker-issued and bound to the supplied key, then emits the same `listening`,
+`connection`, error, and shutdown lifecycle records as ordinary `connect`.

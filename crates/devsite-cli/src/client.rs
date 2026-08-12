@@ -37,6 +37,20 @@ impl ControlPlane {
         decode(response, path).await
     }
 
+    pub async fn get_query<Q: Serialize, T: DeserializeOwned>(
+        &self,
+        path: &str,
+        query: &Q,
+    ) -> Result<T> {
+        let response = self
+            .request(reqwest::Method::GET, path)
+            .query(query)
+            .send()
+            .await
+            .with_context(|| format!("GET {path}"))?;
+        decode(response, path).await
+    }
+
     pub async fn post<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
         let response = self
             .request(reqwest::Method::POST, path)

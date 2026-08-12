@@ -1,0 +1,23 @@
+{
+  "name": "devsite-access",
+  "version": "0.1.0",
+  "description": "Operate devsite and broker endpoint-bound service access through a portable MCP adapter and skill.",
+  "author": {
+    "name": "dev.site"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Devsite Access",
+    "shortDescription": "Manage devsite and broker scoped service grants.",
+    "longDescription": "Provides the devsite CLI workflow skill and a local MCP adapter for status, resources, diagnostics, signed access requests, resolution, planning, and endpoint-bound grant issuance.",
+    "developerName": "dev.site",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": [
+      "Show my devsite state and recommended next actions.",
+      "Request access to a devsite service.",
+      "Review and plan a pending service grant."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

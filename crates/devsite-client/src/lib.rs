@@ -79,6 +79,21 @@ impl ClientEndpoint {
         })
     }
 
+    /// Bind an endpoint with a caller-provided key. Brokered grants use this so
+    /// the endpoint that signed the request is also the endpoint that connects.
+    pub async fn create_with_secret(secret_key: iroh::SecretKey) -> Result<Self> {
+        let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
+            .secret_key(secret_key)
+            .bind()
+            .await
+            .context("binding client endpoint")?;
+        endpoint.online().await;
+        Ok(Self {
+            endpoint,
+            connections: Mutex::new(HashMap::new()),
+        })
+    }
+
     /// This client's public key. The control plane binds capabilities to it, and the
     /// daemon checks that binding against the authenticated peer of the connection.
     pub fn endpoint_id(&self) -> EndpointId {

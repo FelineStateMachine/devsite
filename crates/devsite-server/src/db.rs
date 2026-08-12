@@ -169,6 +169,16 @@ const MIGRATIONS: &[&str] = &[
             END,
             id
        FROM accounts;",
+    // Enrollment tickets carry generic machine scopes. A tunnel session issued
+    // by a broker records that credential and is removed automatically when the
+    // credential is revoked. Request ids are unique to make signed requests
+    // single-use even when they are replayed concurrently.
+    "ALTER TABLE machine_credentials ADD COLUMN scopes TEXT NOT NULL DEFAULT '[]';
+     ALTER TABLE tunnel_sessions ADD COLUMN issuer_credential_id TEXT
+         REFERENCES machine_credentials(id) ON DELETE CASCADE;
+     ALTER TABLE tunnel_sessions ADD COLUMN grant_request_id TEXT;
+     CREATE UNIQUE INDEX tunnel_sessions_grant_request
+         ON tunnel_sessions(grant_request_id) WHERE grant_request_id IS NOT NULL;",
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -212,12 +222,15 @@ pub struct MachineCredential {
     pub last_used_at: Option<u64>,
     pub endpoint_id: Option<String>,
     pub enrolled_at: Option<u64>,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MachineAuthentication {
     pub account: Account,
+    pub credential_id: String,
     pub endpoint_id: String,
+    pub scopes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +278,8 @@ pub struct TunnelSession {
     pub resource_id: ResourceId,
     pub client_endpoint_id: String,
     pub expires_at: u64,
+    pub issuer_credential_id: Option<String>,
+    pub grant_request_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -480,13 +495,22 @@ impl Db {
         account: AccountId,
         name: &str,
         token_hash: &str,
+        scopes: &[String],
         now: u64,
     ) -> Result<()> {
+        let scopes = serde_json::to_string(scopes)?;
         self.conn.execute(
             "INSERT INTO machine_credentials
-                 (id, account_id, name, token_hash, created_at, last_used_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-            params![id, account.to_string(), name, token_hash, now as i64],
+                 (id, account_id, name, token_hash, created_at, last_used_at, scopes)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6)",
+            params![
+                id,
+                account.to_string(),
+                name,
+                token_hash,
+                now as i64,
+                scopes
+            ],
         )?;
         Ok(())
     }
@@ -498,16 +522,16 @@ impl Db {
         token_hash: &str,
         now: u64,
     ) -> Result<Option<MachineAuthentication>> {
-        let row: Option<(String, String)> = self
+        let row: Option<(String, String, String, String)> = self
             .conn
             .query_row(
-                "SELECT account_id, endpoint_id FROM machine_credentials
+                "SELECT id, account_id, endpoint_id, scopes FROM machine_credentials
                  WHERE token_hash = ?1 AND endpoint_id IS NOT NULL",
                 params![token_hash],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        let Some((account_id, endpoint_id)) = row else {
+        let Some((credential_id, account_id, endpoint_id, scopes)) = row else {
             return Ok(None);
         };
 
@@ -520,9 +544,13 @@ impl Db {
         let account = self
             .account_by_id(AccountId::from_str(&account_id)?)?
             .context("machine credential refers to a missing account")?;
+        let scopes =
+            serde_json::from_str(&scopes).context("machine credential has invalid scopes")?;
         Ok(Some(MachineAuthentication {
             account,
+            credential_id,
             endpoint_id,
+            scopes,
         }))
     }
 
@@ -569,7 +597,7 @@ impl Db {
 
     pub fn machine_credentials(&self, account: AccountId) -> Result<Vec<MachineCredential>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, created_at, last_used_at, endpoint_id, enrolled_at
+            "SELECT id, name, created_at, last_used_at, endpoint_id, enrolled_at, scopes
              FROM machine_credentials WHERE account_id = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt
@@ -581,6 +609,13 @@ impl Db {
                     last_used_at: row.get::<_, Option<i64>>(3)?.map(|n| n as u64),
                     endpoint_id: row.get(4)?,
                     enrolled_at: row.get::<_, Option<i64>>(5)?.map(|n| n as u64),
+                    scopes: serde_json::from_str(&row.get::<_, String>(6)?).map_err(|err| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(err),
+                        )
+                    })?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -752,6 +787,31 @@ impl Db {
             .query_map(params![viewer.to_string()], row_to_resource)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows.into_iter().collect()
+    }
+
+    /// Services the account may currently reach, including its own services and
+    /// accepted shares. Pending invitations are deliberately excluded.
+    pub fn accessible_services(
+        &self,
+        viewer: AccountId,
+    ) -> Result<Vec<(Resource, Option<String>)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.id, r.owner_id, r.name, r.kind, r.visibility, r.url, r.folder,
+                    CASE WHEN r.owner_id = ?1 THEN NULL ELSE a.handle END
+             FROM resources r
+             JOIN accounts a ON a.id = r.owner_id
+             LEFT JOIN shares s ON s.resource_id = r.id AND s.viewer_id = ?1
+             WHERE r.kind = 'service' AND (r.owner_id = ?1 OR s.viewer_id IS NOT NULL)
+             ORDER BY lower(r.name), lower(COALESCE(a.handle, ''))",
+        )?;
+        let rows = stmt
+            .query_map(params![viewer.to_string()], |row| {
+                Ok((row_to_resource(row)?, row.get::<_, Option<String>>(7)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(resource, owner_handle)| Ok((resource?, owner_handle)))
+            .collect()
     }
 
     /// Set exactly who is invited to a resource, replacing whoever was there.
@@ -1072,24 +1132,84 @@ impl Db {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_broker_tunnel_session(
+        &self,
+        token_hash: &str,
+        viewer: AccountId,
+        resource: ResourceId,
+        client_endpoint_id: &str,
+        issuer_credential_id: &str,
+        grant_request_id: &str,
+        now: u64,
+        expires_at: u64,
+    ) -> Result<bool> {
+        self.conn.execute(
+            "DELETE FROM tunnel_sessions WHERE expires_at <= ?1",
+            params![now as i64],
+        )?;
+        Ok(self.conn.execute(
+            "INSERT OR IGNORE INTO tunnel_sessions
+                 (token_hash, viewer_id, resource_id, client_endpoint_id, expires_at,
+                  issuer_credential_id, grant_request_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                token_hash,
+                viewer.to_string(),
+                resource.to_string(),
+                client_endpoint_id,
+                expires_at as i64,
+                issuer_credential_id,
+                grant_request_id,
+            ],
+        )? > 0)
+    }
+
+    pub fn active_broker_grant_count(&self, credential_id: &str, now: u64) -> Result<usize> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM tunnel_sessions
+                 WHERE issuer_credential_id = ?1 AND expires_at > ?2",
+                params![credential_id, now as i64],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count as usize)
+            .map_err(Into::into)
+    }
+
     pub fn tunnel_session(&self, token_hash: &str, now: u64) -> Result<Option<TunnelSession>> {
-        let row: Option<(String, String, String, i64)> = self
+        type TunnelSessionRow = (String, String, String, i64, Option<String>, Option<String>);
+        let row: Option<TunnelSessionRow> = self
             .conn
             .query_row(
-                "SELECT viewer_id, resource_id, client_endpoint_id, expires_at
+                "SELECT viewer_id, resource_id, client_endpoint_id, expires_at,
+                        issuer_credential_id, grant_request_id
                  FROM tunnel_sessions WHERE token_hash = ?1 AND expires_at > ?2",
                 params![token_hash, now as i64],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .optional()?;
-        row.map(|(viewer, resource, client_endpoint_id, expires_at)| {
-            Ok(TunnelSession {
-                viewer_id: AccountId::from_str(&viewer)?,
-                resource_id: ResourceId::from_str(&resource)?,
-                client_endpoint_id,
-                expires_at: expires_at as u64,
-            })
-        })
+        row.map(
+            |(viewer, resource, client_endpoint_id, expires_at, issuer, request)| {
+                Ok(TunnelSession {
+                    viewer_id: AccountId::from_str(&viewer)?,
+                    resource_id: ResourceId::from_str(&resource)?,
+                    client_endpoint_id,
+                    expires_at: expires_at as u64,
+                    issuer_credential_id: issuer,
+                    grant_request_id: request,
+                })
+            },
+        )
         .transpose()
     }
 
@@ -1245,6 +1365,8 @@ mod tests {
                 resource_id: service,
                 client_endpoint_id: "client-key".into(),
                 expires_at: 1000,
+                issuer_credential_id: None,
+                grant_request_id: None,
             })
         );
         assert!(db.delete_tunnel_session("session-hash").unwrap());
@@ -1286,11 +1408,32 @@ mod tests {
                      created_at INTEGER NOT NULL
                  );
                  INSERT INTO accounts VALUES ('account-shoo', 'pairwise-alice', 'alice', 0);
-                 INSERT INTO accounts VALUES ('account-local', 'local:bob', 'bob', 0);",
+                 INSERT INTO accounts VALUES ('account-local', 'local:bob', 'bob', 0);
+                 CREATE TABLE machine_credentials (
+                     id TEXT PRIMARY KEY,
+                     account_id TEXT NOT NULL,
+                     name TEXT NOT NULL,
+                     token_hash TEXT NOT NULL UNIQUE,
+                     created_at INTEGER NOT NULL,
+                     last_used_at INTEGER,
+                     endpoint_id TEXT,
+                     enrolled_at INTEGER
+                 );
+                 CREATE TABLE tunnel_sessions (
+                     token_hash TEXT PRIMARY KEY,
+                     viewer_id TEXT NOT NULL,
+                     resource_id TEXT NOT NULL,
+                     client_endpoint_id TEXT NOT NULL,
+                     expires_at INTEGER NOT NULL
+                 );",
             )
             .unwrap();
+        let identity_migration = MIGRATIONS
+            .iter()
+            .position(|migration| migration.contains("INSERT OR IGNORE INTO account_identities"))
+            .unwrap();
         connection
-            .pragma_update(None, "user_version", (MIGRATIONS.len() - 1) as i64)
+            .pragma_update(None, "user_version", identity_migration as i64)
             .unwrap();
         migrate(&connection).unwrap();
 
@@ -1887,9 +2030,17 @@ mod tests {
 
     #[test]
     fn machine_tickets_enroll_once_and_become_endpoint_bound_credentials() {
-        let (db, alice, _) = seeded();
-        db.create_machine_credential("machine_one", alice.id, "Laptop", "ticket-hash", 10)
-            .unwrap();
+        let (mut db, alice, _) = seeded();
+        let scopes = vec!["service_grants:issue".to_string()];
+        db.create_machine_credential(
+            "machine_one",
+            alice.id,
+            "Laptop",
+            "ticket-hash",
+            &scopes,
+            10,
+        )
+        .unwrap();
 
         assert_eq!(db.active_machine_credential_count(alice.id).unwrap(), 1);
         assert!(db
@@ -1925,14 +2076,54 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(authenticated.account.id, alice.id);
+        assert_eq!(authenticated.credential_id, "machine_one");
         assert_eq!(authenticated.endpoint_id, "endpoint");
+        assert_eq!(authenticated.scopes, scopes);
         let credentials = db.machine_credentials(alice.id).unwrap();
         assert_eq!(credentials.len(), 1);
         assert_eq!(credentials[0].name, "Laptop");
         assert_eq!(credentials[0].endpoint_id.as_deref(), Some("endpoint"));
         assert_eq!(credentials[0].enrolled_at, Some(20));
         assert_eq!(credentials[0].last_used_at, Some(20));
+        assert_eq!(credentials[0].scopes, scopes);
         db.register_daemon(alice.id, "endpoint").unwrap();
+
+        let service = db
+            .create_resource(
+                alice.id,
+                "postgres",
+                ResourceKind::Service,
+                Visibility::Private,
+                None,
+                None,
+                20,
+            )
+            .unwrap();
+        assert!(db
+            .create_broker_tunnel_session(
+                "session-hash",
+                alice.id,
+                service,
+                "requester-endpoint",
+                "machine_one",
+                "agr_one",
+                20,
+                100,
+            )
+            .unwrap());
+        assert!(!db
+            .create_broker_tunnel_session(
+                "different-session-hash",
+                alice.id,
+                service,
+                "requester-endpoint",
+                "machine_one",
+                "agr_one",
+                20,
+                100,
+            )
+            .unwrap());
+        assert_eq!(db.active_broker_grant_count("machine_one", 30).unwrap(), 1);
 
         assert!(db
             .revoke_machine_credential(alice.id, "machine_one", 30)
@@ -1944,6 +2135,7 @@ mod tests {
             .is_none());
         assert_eq!(db.active_machine_credential_count(alice.id).unwrap(), 0);
         assert!(db.machine_credentials(alice.id).unwrap().is_empty());
+        assert!(db.tunnel_session("session-hash", 40).unwrap().is_none());
     }
 
     #[test]

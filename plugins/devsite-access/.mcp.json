@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "devsite": {
+      "command": "node",
+      "args": ["scripts/devsite-mcp.mjs"],
+      "cwd": ".",
+      "env_vars": ["DEVSITE_BIN", "DEVSITE_HOME", "DEVSITE_SERVER"]
+    }
+  }
+}

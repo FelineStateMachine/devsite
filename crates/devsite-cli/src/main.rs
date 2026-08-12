@@ -10,6 +10,7 @@ use devsite_daemon::Daemon;
 use devsite_proto::{AccountId, ResourceId, SignedCapability};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::fs::OpenOptions;
 use std::io::IsTerminal;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
@@ -60,6 +61,9 @@ enum Command {
     /// Host local TCP services.
     #[command(subcommand)]
     Service(ServiceCommand),
+    /// Request and broker short-lived endpoint-bound service access.
+    #[command(subcommand)]
+    Access(AccessCommand),
     /// Forward a local TCP port to a service you may access.
     Connect {
         /// Short-lived connection ticket minted on dev.site.
@@ -150,6 +154,54 @@ enum ServiceCommand {
 }
 
 #[derive(Subcommand)]
+enum AccessCommand {
+    /// Create a signed request without contacting the control plane.
+    Request {
+        /// Human service keyword for a trusted broker to resolve.
+        service: String,
+        /// Public JSON request to hand to the broker.
+        #[arg(long, value_name = "FILE")]
+        request: std::path::PathBuf,
+        /// Private endpoint key retained by the requesting sandbox.
+        #[arg(long, value_name = "FILE")]
+        key: std::path::PathBuf,
+        /// Seconds before the request itself expires (maximum 600).
+        #[arg(long, default_value_t = 300)]
+        ttl: u64,
+    },
+    /// Find services this broker credential may delegate.
+    Resolve { keyword: String },
+    /// Validate or issue a grant for a signed request.
+    Grant {
+        /// Signed request JSON received from the sandboxed agent.
+        #[arg(long, value_name = "FILE")]
+        request: std::path::PathBuf,
+        /// Canonical resource id. Omit only when the keyword has one unambiguous match.
+        #[arg(long)]
+        resource: Option<String>,
+        /// Grant lifetime in seconds (maximum 900).
+        #[arg(long, default_value_t = 900)]
+        ttl: u64,
+        /// Validate and show the exact endpoint-bound grant without issuing it.
+        #[arg(long, visible_alias = "dry-run")]
+        plan: bool,
+        /// Server-signed token returned by an approved plan.
+        #[arg(long, requires = "request")]
+        approved_plan: Option<String>,
+    },
+    /// Forward a local TCP port using an endpoint-bound broker grant.
+    Connect {
+        /// Session grant returned by the broker.
+        grant: String,
+        /// Private endpoint key created with `access request`.
+        #[arg(long, value_name = "FILE")]
+        key: std::path::PathBuf,
+        #[arg(long, default_value = "127.0.0.1:0")]
+        listen: SocketAddr,
+    },
+}
+
+#[derive(Subcommand)]
 enum DaemonCommand {
     /// Run the daemon in the foreground.
     Run,
@@ -184,6 +236,11 @@ impl Command {
             Self::Resources(ResourcesCommand::List) => "resources.list",
             Self::Service(ServiceCommand::Host { .. }) => "service.host",
             Self::Service(ServiceCommand::Remove { .. }) => "service.remove",
+            Self::Access(AccessCommand::Request { .. }) => "access.request",
+            Self::Access(AccessCommand::Resolve { .. }) => "access.resolve",
+            Self::Access(AccessCommand::Grant { plan: true, .. }) => "access.grant.plan",
+            Self::Access(AccessCommand::Grant { plan: false, .. }) => "access.grant",
+            Self::Access(AccessCommand::Connect { .. }) => "access.connect",
             Self::Connect { .. } => "connect",
             Self::Theme(ThemeCommand::Show) => "theme.show",
             Self::Theme(ThemeCommand::Set { .. }) => "theme.set",
@@ -223,6 +280,7 @@ fn help_target(args: &[std::ffi::OsString]) -> Option<String> {
             | "link"
             | "resources"
             | "service"
+            | "access"
             | "connect"
             | "theme"
             | "status"
@@ -237,6 +295,7 @@ fn help_target(args: &[std::ffi::OsString]) -> Option<String> {
         ("link", Some("set" | "remove"))
             | ("resources", Some("list"))
             | ("service", Some("host" | "remove"))
+            | ("access", Some("request" | "resolve" | "grant" | "connect"))
             | ("theme", Some("show" | "set" | "clear" | "properties"))
             | ("daemon", Some("run" | "status"))
     );
@@ -338,6 +397,52 @@ struct RedeemTicketResponse {
 struct EnrollMachineResponse {
     machine_credential: String,
     endpoint_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct ServiceGrantRequest {
+    schema_version: u32,
+    request_id: String,
+    service: String,
+    requester_endpoint_id: String,
+    expires_at: u64,
+    proof: String,
+}
+
+#[derive(Deserialize, Serialize)]
+struct AccessibleService {
+    resource_id: String,
+    name: String,
+    owner_handle: Option<String>,
+    visibility: String,
+    exact_name_match: bool,
+}
+
+#[derive(Deserialize)]
+struct AccessibleServicesResponse {
+    keyword: String,
+    services: Vec<AccessibleService>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ServiceGrantResponse {
+    grant: String,
+    request_id: String,
+    resource_id: String,
+    name: String,
+    owner_id: String,
+    owner_handle: Option<String>,
+    requester_endpoint_id: String,
+    expires_at: u64,
+}
+
+#[derive(Deserialize)]
+struct TunnelSessionInfo {
+    resource_id: String,
+    name: String,
+    requester_endpoint_id: String,
+    expires_at: u64,
+    brokered: bool,
 }
 
 #[derive(Deserialize)]
@@ -539,6 +644,36 @@ async fn run(cli: Cli, output: Output) -> Result<()> {
         }) => host_service(&paths, port, name, share, folder, plan, output).await,
         Command::Service(ServiceCommand::Remove { name, plan }) => {
             remove_service(&paths, &name, plan, output).await
+        }
+        Command::Access(AccessCommand::Request {
+            service,
+            request,
+            key,
+            ttl,
+        }) => create_access_request(&service, &request, &key, ttl, output),
+        Command::Access(AccessCommand::Resolve { keyword }) => {
+            resolve_access(&paths, &keyword, output).await
+        }
+        Command::Access(AccessCommand::Grant {
+            request,
+            resource,
+            ttl,
+            plan,
+            approved_plan,
+        }) => {
+            grant_access(
+                &paths,
+                &request,
+                resource.as_deref(),
+                ttl,
+                plan,
+                approved_plan.as_deref(),
+                output,
+            )
+            .await
+        }
+        Command::Access(AccessCommand::Connect { grant, key, listen }) => {
+            connect_grant(&cli.server, &grant, &key, listen, output).await
         }
         Command::Connect { ticket, listen } => connect(&cli.server, &ticket, listen, output).await,
         Command::Theme(command) => theme(&paths, &cli.server, command, output).await,
@@ -1041,6 +1176,358 @@ async fn connect(server: &str, ticket: &str, listen: SocketAddr, output: Output)
         .await
         .context("redeeming connection ticket")?;
     let api = Arc::new(ControlPlane::new(server, Some(redeemed.session_token)));
+    run_tunnel(
+        "connect",
+        server,
+        client,
+        api,
+        &redeemed.name,
+        &redeemed.resource_id,
+        redeemed.expires_at,
+        listen,
+        output,
+    )
+    .await
+}
+
+fn create_access_request(
+    service: &str,
+    request_path: &std::path::Path,
+    key_path: &std::path::Path,
+    ttl: u64,
+    output: Output,
+) -> Result<()> {
+    let service = service.trim();
+    if service.is_empty() || service.chars().count() > 80 {
+        bail!("service keyword must be 1 to 80 characters");
+    }
+    if ttl == 0 || ttl > 10 * 60 {
+        bail!("request TTL must be between 1 and 600 seconds");
+    }
+    if request_path == key_path {
+        bail!("--request and --key must name different files");
+    }
+
+    let secret = iroh::SecretKey::generate();
+    let endpoint = secret.public();
+    let mut nonce = [0u8; 24];
+    getrandom::fill(&mut nonce)
+        .map_err(|err| anyhow::anyhow!("generating service grant request id: {err}"))?;
+    let request_id = format!("agr_{}", data_encoding::BASE64URL_NOPAD.encode(&nonce));
+    let expires_at = unix_now()?.saturating_add(ttl);
+    let message = devsite_proto::service_grant_request_message(
+        &request_id,
+        service,
+        endpoint.as_bytes(),
+        expires_at,
+    );
+    let proof = data_encoding::BASE64URL_NOPAD.encode(&secret.sign(&message).to_bytes());
+    let request = ServiceGrantRequest {
+        schema_version: 1,
+        request_id,
+        service: service.to_string(),
+        requester_endpoint_id: endpoint.to_string(),
+        expires_at,
+        proof,
+    };
+
+    write_new_private(key_path, &secret.to_bytes())?;
+    let request_json = serde_json::to_vec_pretty(&request)?;
+    if let Err(err) = write_new_private(request_path, &request_json) {
+        std::fs::remove_file(key_path).ok();
+        return Err(err);
+    }
+
+    if output.json {
+        output.success(
+            "access.request",
+            serde_json::json!({
+                "request": request,
+                "request_path": request_path,
+                "key_path": key_path,
+                "handoff": "share_request_only",
+            }),
+        );
+    } else {
+        println!("created signed request for {service}");
+        println!(
+            "  request  {} (share with the broker)",
+            request_path.display()
+        );
+        println!(
+            "  key      {} (keep inside the requester)",
+            key_path.display()
+        );
+        println!("  endpoint {endpoint}");
+        println!("  expires  {expires_at}");
+    }
+    Ok(())
+}
+
+async fn resolve_access(paths: &Paths, keyword: &str, output: Output) -> Result<()> {
+    let listing = resolve_access_listing(paths, keyword).await?;
+    if output.json {
+        output.success("access.resolve", serde_json::to_value(&listing.services)?);
+    } else if listing.services.is_empty() {
+        println!("no accessible services match {:?}", listing.keyword);
+    } else {
+        for service in listing.services {
+            let owner = service
+                .owner_handle
+                .map(|handle| format!(" from @{handle}"))
+                .unwrap_or_default();
+            println!("{}  {}{}", service.resource_id, service.name, owner);
+        }
+    }
+    Ok(())
+}
+
+async fn resolve_access_listing(
+    paths: &Paths,
+    keyword: &str,
+) -> Result<AccessibleServicesResponse> {
+    let config = load_authenticated(paths)?;
+    let server = enrolled_server(&config)?;
+    let api = ControlPlane::new(server, config.machine_credential.clone());
+    api.get_query("/api/access/services", &[("keyword", keyword)])
+        .await
+        .context("resolving accessible services")
+}
+
+async fn grant_access(
+    paths: &Paths,
+    request_path: &std::path::Path,
+    resource: Option<&str>,
+    ttl: u64,
+    plan: bool,
+    approved_plan: Option<&str>,
+    output: Output,
+) -> Result<()> {
+    if ttl == 0 || ttl > 15 * 60 {
+        bail!("grant TTL must be between 1 and 900 seconds");
+    }
+    if plan && approved_plan.is_some() {
+        bail!("--approved-plan cannot be combined with --plan");
+    }
+    if !plan && approved_plan.is_none() {
+        bail!("apply requires --approved-plan from the exact reviewed plan");
+    }
+    let approved_claims = approved_plan
+        .map(|token| {
+            devsite_proto::access_plan::SignedServiceGrantPlan::from_token(token)
+                .and_then(|plan| plan.unverified_claims())
+                .map_err(|_| anyhow::anyhow!("--approved-plan is malformed"))
+        })
+        .transpose()?;
+    let request: ServiceGrantRequest = serde_json::from_slice(
+        &std::fs::read(request_path)
+            .with_context(|| format!("reading {}", request_path.display()))?,
+    )
+    .with_context(|| format!("parsing {}", request_path.display()))?;
+    if approved_claims.as_ref().is_some_and(|claims| {
+        claims.schema_version != request.schema_version
+            || claims.request_id != request.request_id
+            || claims.service != request.service
+            || claims.requester_endpoint_id != request.requester_endpoint_id
+            || claims.request_expires_at != request.expires_at
+    }) {
+        bail!("--approved-plan does not match the signed request file");
+    }
+    let listing = resolve_access_listing(paths, &request.service).await?;
+    let resource_id = match (resource, &approved_claims) {
+        (Some(resource), Some(claims)) if resource != claims.resource_id => {
+            bail!("--resource does not match --approved-plan")
+        }
+        (_, Some(claims)) => {
+            if !listing
+                .services
+                .iter()
+                .any(|item| item.resource_id == claims.resource_id)
+            {
+                bail!("the approved service is no longer accessible to this broker");
+            }
+            claims.resource_id.clone()
+        }
+        (Some(resource), None) => {
+            if !listing
+                .services
+                .iter()
+                .any(|item| item.resource_id == resource)
+            {
+                bail!(
+                    "resource {resource} is not among the services matching {:?}",
+                    request.service
+                );
+            }
+            resource.to_string()
+        }
+        (None, None) => select_access_service(&request.service, &listing.services)?
+            .resource_id
+            .clone(),
+    };
+    let expires_at = match &approved_claims {
+        Some(claims) => claims.grant_expires_at,
+        None => unix_now()?.saturating_add(ttl),
+    };
+    let requester: iroh::EndpointId = request
+        .requester_endpoint_id
+        .parse()
+        .context("request contains an invalid endpoint id")?;
+    let broker = paths.load_or_create_identity()?;
+    let message = devsite_proto::service_grant_issue_message(
+        &request.request_id,
+        &resource_id,
+        requester.as_bytes(),
+        expires_at,
+    );
+    let broker_proof = data_encoding::BASE64URL_NOPAD.encode(&broker.sign(&message).to_bytes());
+    let body = serde_json::json!({
+        "request": request,
+        "resource_id": resource_id,
+        "expires_at": expires_at,
+        "broker_proof": broker_proof,
+        "approved_plan": approved_plan,
+    });
+    let config = load_authenticated(paths)?;
+    let server = enrolled_server(&config)?;
+    let api = ControlPlane::new(server, config.machine_credential.clone());
+    if plan {
+        let result: serde_json::Value = api
+            .post("/api/access/grants/plan", &body)
+            .await
+            .context("planning endpoint-bound service grant")?;
+        if output.json {
+            output.success("access.grant.plan", result);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+    } else {
+        let grant: ServiceGrantResponse = api
+            .post("/api/access/grants", &body)
+            .await
+            .context("issuing endpoint-bound service grant")?;
+        if output.json {
+            let mut result = serde_json::to_value(&grant)?;
+            if let serde_json::Value::Object(fields) = &mut result {
+                fields.insert("server".to_string(), serde_json::json!(server));
+            }
+            output.success("access.grant", result);
+        } else {
+            println!("issued {} access to {}", grant.request_id, grant.name);
+            if let Some(owner) = &grant.owner_handle {
+                println!("  owner    @{owner}");
+            } else {
+                println!("  owner    {}", grant.owner_id);
+            }
+            println!("  endpoint {}", grant.requester_endpoint_id);
+            println!("  expires  {}", grant.expires_at);
+            println!("  grant    {}", grant.grant);
+        }
+    }
+    Ok(())
+}
+
+fn select_access_service<'a>(
+    keyword: &str,
+    services: &'a [AccessibleService],
+) -> Result<&'a AccessibleService> {
+    let exact = services
+        .iter()
+        .filter(|service| service.exact_name_match)
+        .collect::<Vec<_>>();
+    match (exact.as_slice(), services) {
+        ([service], _) => Ok(*service),
+        ([], [service]) => Ok(service),
+        ([], []) => bail!("no accessible service matches {keyword:?}"),
+        _ => bail!(
+            "service keyword {keyword:?} is ambiguous; run `devsite access resolve {keyword}` and pass --resource"
+        ),
+    }
+}
+
+async fn connect_grant(
+    server: &str,
+    grant: &str,
+    key_path: &std::path::Path,
+    listen: SocketAddr,
+    output: Output,
+) -> Result<()> {
+    if !grant.starts_with("dss_") {
+        bail!("broker grant must start with dss_");
+    }
+    let raw = std::fs::read(key_path).with_context(|| format!("reading {}", key_path.display()))?;
+    let bytes: [u8; 32] = raw
+        .as_slice()
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("{} is not a 32 byte endpoint key", key_path.display()))?;
+    let client =
+        Arc::new(ClientEndpoint::create_with_secret(iroh::SecretKey::from_bytes(&bytes)).await?);
+    let api = Arc::new(ControlPlane::new(server, Some(grant.to_string())));
+    let session: TunnelSessionInfo = api
+        .get("/api/tunnel/session")
+        .await
+        .context("validating broker grant")?;
+    if session.requester_endpoint_id != client.endpoint_id().to_string() || !session.brokered {
+        bail!("the grant is not bound to the supplied requester endpoint key");
+    }
+    run_tunnel(
+        "access.connect",
+        server,
+        client,
+        api,
+        &session.name,
+        &session.resource_id,
+        session.expires_at,
+        listen,
+        output,
+    )
+    .await
+}
+
+fn unix_now() -> Result<u64> {
+    Ok(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .context("system clock is before unix epoch")?
+        .as_secs())
+}
+
+fn write_new_private(path: &std::path::Path, contents: &[u8]) -> Result<()> {
+    if let Some(parent) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("creating {} without overwriting it", path.display()))?;
+    use std::io::Write;
+    file.write_all(contents)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_tunnel(
+    command: &str,
+    server: &str,
+    client: Arc<ClientEndpoint>,
+    api: Arc<ControlPlane>,
+    name: &str,
+    resource_id: &str,
+    expires_at: u64,
+    listen: SocketAddr,
+    output: Output,
+) -> Result<()> {
+    if !listen.ip().is_loopback() {
+        bail!("--listen must be a loopback address; refusing to publish the tunnel on the LAN");
+    }
     let listener = TcpListener::bind(listen)
         .await
         .with_context(|| format!("binding local listener {listen}"))?;
@@ -1048,23 +1535,22 @@ async fn connect(server: &str, ticket: &str, listen: SocketAddr, output: Output)
 
     if output.json {
         output.event(
-            "connect",
+            command,
             "listening",
             serde_json::json!({
-                "name": redeemed.name,
-                "resource_id": redeemed.resource_id,
-                "resource_url": format!("{server}/s/{}", redeemed.resource_id),
+                "name": name,
+                "resource_id": resource_id,
+                "resource_url": format!("{server}/s/{resource_id}"),
                 "listen": bound.to_string(),
-                "expires_at": redeemed.expires_at,
+                "expires_at": expires_at,
             }),
         );
     } else {
-        println!(
-            "connected to {} ({server}/s/{})",
-            redeemed.name, redeemed.resource_id
-        );
+        println!("connected to {} ({server}/s/{})", name, resource_id);
         println!("  listening on {bound}");
-        println!("  session expires at unix time {}", redeemed.expires_at);
+        if expires_at > 0 {
+            println!("  session expires at unix time {expires_at}");
+        }
         println!("  press Ctrl-C to stop");
     }
 
@@ -1073,7 +1559,7 @@ async fn connect(server: &str, ticket: &str, listen: SocketAddr, output: Output)
             accepted = listener.accept() => accepted.context("accepting local connection")?,
             _ = tokio::signal::ctrl_c() => {
                 if output.json {
-                    output.event("connect", "shutdown", serde_json::json!({}));
+                    output.event(command, "shutdown", serde_json::json!({}));
                 } else {
                     println!("\nshutting down");
                 }

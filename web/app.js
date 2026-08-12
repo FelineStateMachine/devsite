@@ -690,10 +690,13 @@ function incomingShareControl(share) {
 
 function credentialControl(credential) {
   const item = document.createElement('li');
+  const scopes = credential.scopes?.length
+    ? ` · ${credential.scopes.map((scope) => esc(scope)).join(', ')}`
+    : '';
   item.innerHTML = `
     <div>
       <strong>${esc(credential.name)}</strong>
-      <small>last used ${esc(formatTime(credential.last_used_at))}</small>
+      <small>last used ${esc(formatTime(credential.last_used_at))}${scopes}</small>
     </div>`;
   const button = document.createElement('button');
   button.className = 'secondary outline';
@@ -790,6 +793,12 @@ async function showDashboard(newCredential = null) {
                    placeholder="This MacBook" aria-label="Machine name" required>
             <button type="submit">Create</button>
           </fieldset>
+          <label>
+            <input id="credential-service-grants" type="checkbox">
+            Allow this machine to issue endpoint-bound service grants
+          </label>
+          <small>This authority is server-enforced and can be removed by revoking the
+          machine credential.</small>
           <small id="credential-note"></small>
         </form>
         <div id="new-machine-token"></div>
@@ -869,7 +878,10 @@ async function showDashboard(newCredential = null) {
     try {
       const created = await api('/api/machine-credentials', {
         method: 'POST',
-        body: JSON.stringify({ name: $('credential-name').value }),
+        body: JSON.stringify({
+          name: $('credential-name').value,
+          scopes: $('credential-service-grants').checked ? ['service_grants:issue'] : [],
+        }),
       });
       await showDashboard({ name: created.credential.name, ticket: created.ticket });
     } catch (err) {

@@ -136,3 +136,46 @@ fn resources_and_plan_flags_are_discoverable_in_structured_help() {
     assert!(text.contains("--plan"));
     assert!(text.contains("--dry-run"));
 }
+
+#[test]
+fn access_request_writes_a_shareable_request_and_separate_private_key() {
+    let suffix = NEXT_HOME.fetch_add(1, Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!(
+        "devsite-access-request-test-{}-{suffix}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&root).unwrap();
+    let request = root.join("request.json");
+    let key = root.join("requester.key");
+    let output = Command::new(env!("CARGO_BIN_EXE_devsite"))
+        .args([
+            "--json",
+            "access",
+            "request",
+            "postgres",
+            "--request",
+            request.to_str().unwrap(),
+            "--key",
+            key.to_str().unwrap(),
+        ])
+        .env("DEVSITE_HOME", root.join("home"))
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value = json(&output);
+    assert_eq!(value["command"], "access.request");
+    assert_eq!(value["result"]["request"]["service"], "postgres");
+    assert!(value["result"]["request"]["request_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("agr_"));
+    assert_eq!(std::fs::read(&key).unwrap().len(), 32);
+    let stored: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&request).unwrap()).unwrap();
+    assert_eq!(stored, value["result"]["request"]);
+    std::fs::remove_dir_all(root).unwrap();
+}

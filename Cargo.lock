@@ -829,6 +829,7 @@ dependencies = [
  "devsite-client",
  "devsite-daemon",
  "devsite-proto",
+ "getrandom 0.3.4",
  "iroh",
  "reqwest 0.12.28",
  "semver",

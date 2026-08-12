@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use devsite_proto::access_plan::{ServiceGrantPlanClaims, SignedServiceGrantPlan};
 use devsite_proto::capability::{
     CapabilityClaims, KeyBytes, Permission, SignedCapability, DEFAULT_LIFETIME_SECS,
 };
@@ -78,6 +79,14 @@ impl Issuer {
     /// Hex-encoded public key, as daemons pin it.
     pub fn public_key_hex(&self) -> String {
         data_encoding::HEXLOWER.encode(self.verifying_key().as_bytes())
+    }
+
+    pub fn issue_access_plan(&self, claims: &ServiceGrantPlanClaims) -> Result<String> {
+        Ok(SignedServiceGrantPlan::sign(claims, &self.key)?.to_token())
+    }
+
+    pub fn verify_access_plan(&self, token: &str) -> Result<ServiceGrantPlanClaims> {
+        Ok(SignedServiceGrantPlan::from_token(token)?.verify(&self.verifying_key())?)
     }
 
     /// Mint a grant. Every field is supplied by the caller from verified state — nothing

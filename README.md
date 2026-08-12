@@ -158,6 +158,41 @@ agent skill that teaches these intent-based workflows through the CLI's JSON con
 at [`skills/devsite-cli/SKILL.md`](skills/devsite-cli/SKILL.md); it has no dependency on a
 particular model or agent harness.
 
+## Brokered agent access
+
+A sandboxed worker can request temporary service access without receiving a logged-in
+machine's credential or endpoint key:
+
+```bash
+# Requester: keep requester.key private; send only request.json to the broker.
+devsite access request postgres --request request.json --key requester.key --json
+
+# Broker: requires a machine ticket enrolled with service_grants:issue.
+devsite access resolve postgres --json
+devsite access grant --request request.json --plan --json
+devsite access grant --request request.json --approved-plan dsp_... --json
+
+# Requester: use the server and dss_ grant returned by the broker.
+devsite --server https://dev.site access connect dss_... --key requester.key --json
+```
+
+The request signs the service keyword, requester endpoint, request id, and expiry. The
+broker resolves that intent only among services its account may access, signs the chosen
+resource and expiry, and receives a single-use, short-lived grant bound to the requester's
+endpoint. Requests expire within 10 minutes; grants within 15 minutes. Replaying an issued
+request id is rejected. Apply requires the server-signed `dsp_…` token returned by the
+exact reviewed plan, so changing the request, resource, endpoint, or expiry after approval
+is rejected. The dashboard exposes broker authority as an explicit
+`service_grants:issue` scope on the single-use machine enrollment ticket, and revoking that
+machine credential removes the grant sessions it issued.
+
+The optional [`plugins/devsite-access`](plugins/devsite-access) bundle packages the same
+harness-neutral skill with a local MCP stdio adapter. The adapter implements MCP
+`2026-07-28` discovery and request-scoped metadata: there is no `initialize` exchange,
+negotiated session, or call-order state. Any compatible MCP client can use the adapter; the
+plugin manifest is only a packaging layer. See [brokered access](docs/access-broker.md) for
+the trust model and integration contract.
+
 Homebrew installs can supervise it at login on macOS or Linux:
 
 ```bash
@@ -170,9 +205,10 @@ Native Linux packages may install `packaging/systemd/devsite.service` as a user 
 systemctl --user enable --now devsite.service
 ```
 
-The endpoint identity persists in the devsite config directory, with its Ed25519 public key
-written to `devsite-endpoint.pub`. The daemon registers that public endpoint id with the control
-plane once at startup, publishes its address through Iroh, and reloads service targets and
+The endpoint identity persists in the devsite config directory as
+`devsite-endpoint.key`, with its Ed25519 public key written to
+`devsite-endpoint.pub`. The daemon registers that public endpoint id with the control plane
+once at startup, publishes its address through Iroh, and reloads service targets and
 authorizations every two seconds. Adding or removing a service does not require restarting
 it.
 
