@@ -1,9 +1,10 @@
 # The profile template
 
 A dev.site profile is one fixed piece of semantic HTML styled by [Pico CSS] and
-nothing else. Personalisation happens by assigning Pico's own variables, not by
-writing rules — which is what makes "is this theme valid?" a question the server
-can answer mechanically, in `crates/devsite-server/src/theme.rs`.
+nothing else. Personalisation happens through validated declarations, not rules:
+Pico variables control appearance, while three dev.site variables control the
+initial folder layout. That makes "is this profile declaration valid?" a question
+the server can answer mechanically in `crates/devsite-server/src/theme.rs`.
 
 [Pico CSS]: https://picocss.com
 
@@ -13,7 +14,7 @@ can answer mechanically, in `crates/devsite-server/src/theme.rs`.
 | --- | --- | --- |
 | Framework | `web/vendor/pico.min.css` | Pico 2.1.1, vendored. Styles semantic elements directly. |
 | Site | `web/site.css` | The typeface, and the few layout rules Pico has no opinion about. No colours. |
-| Theme | `<style id="profile-theme">` | One rule, written at render time, holding only `--pico-*` assignments. |
+| Theme | `<style id="profile-theme">` | One rule, written at render time, holding only `--pico-*` assignments. `--devsite-*` layout values never enter it. |
 
 They load in that order, and the theme is written as one rule:
 
@@ -43,8 +44,8 @@ no `--pico-font-family` in the whitelist.
 
 ## The template
 
-Rendered by `web/app.js`. A theme is only meaningful against this structure, so
-changes here and changes to the whitelist belong in the same commit.
+Rendered by `web/app.js`. Profile declarations are only meaningful against this
+structure, so changes here and changes to the whitelist belong in the same commit.
 
 ```html
 <body>
@@ -75,7 +76,8 @@ changes here and changes to the whitelist belong in the same commit.
         </li>
       </ul>
 
-      <!-- then a fold per folder, in the order those first appear -->
+      <!-- then a fold per folder, in the owner's declared order followed by
+           unlisted folders in the order they first appear -->
       <details class="folder" open>
         <summary>Games <small>3</small></summary>
         <ul class="entries">…</ul>
@@ -127,25 +129,35 @@ That falls out of the rendering too. The set of folders is derived from the
 entries the viewer is allowed to see, so a folder holding only private sites does
 not appear to a stranger as an empty fold — it is never built at all.
 
-Folds are `<details open>`. A profile's job is to show what is on it, so a folder
-groups without hiding, and collapsing is the reader's choice rather than the
-owner's. Pico draws the marker and handles the open state; `.folder > summary`
-is the label.
+Folds are semantic `<details>` elements. They are open by default for profiles
+without layout declarations. `--devsite-folders` changes that initial default,
+and `--devsite-open-folders` names exceptions that start open. Once rendered,
+the reader controls the ordinary open state. Pico draws the marker and handles
+the interaction; `.folder > summary` is the label.
+
+`--devsite-folder-order` names folders that should appear first. A name not
+visible to the current viewer is ignored; visible folders omitted from the list
+retain their first-appearance order. Folder names use JSON-style quoted strings,
+the same non-control Unicode accepted by resource folders, with the same
+40-scalar limit. Quotes and backslashes use JSON escapes.
 
 `--pico-ins-color` and `--pico-del-color` are still in the whitelist, and are
 what the viewer's success and failure messages are drawn with.
 
-## What a theme may set
+## What profile presentation may set
 
 The list lives in `PROPERTIES` in `theme.rs` and is served at
 `GET /api/theme/properties`, which is also what `devsite theme properties`
-prints. Every name in it is a variable the vendored Pico actually defines; a name
-Pico does not define would be accepted, stored, and quietly do nothing, which is
-the failure mode the list exists to prevent.
+prints. Every `--pico-*` name in it is a variable the vendored Pico actually
+defines. The three folder-layout names are consumed explicitly by `app.js` and
+never emitted as CSS. An unrecognized name is rejected rather than accepted,
+stored, and left to do nothing.
 
 | Group | Properties | Value |
 | --- | --- | --- |
 | Scheme | `--devsite-scheme` | `light`, `dark` or `auto` |
+| Layout | `--devsite-folders` | `open` or `closed` |
+| | `--devsite-open-folders`, `--devsite-folder-order` | one or more quoted folder names |
 | Surfaces | `--pico-background-color`, `--pico-color`, `--pico-muted-color`, `--pico-muted-border-color`, `--pico-border-color`, `--pico-text-selection-color` | colour |
 | Accents | `--pico-primary` and its `-background`, `-hover`, `-hover-background`, `-inverse`, `-underline`, `-focus`; `--pico-secondary` and its `-background`, `-hover`, `-inverse`; `--pico-contrast` and its `-background`, `-inverse` | colour |
 | Headings | `--pico-h1-color` … `--pico-h6-color` | colour |
@@ -168,6 +180,7 @@ leaves `data-theme` unset and follows the viewer's system preference. Explicit
 | Kind | Accepts |
 | --- | --- |
 | colour | `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`; `rgb()`, `rgba()`, `hsl()`, `hsla()`, `oklch()` over plain numbers; a CSS colour name; `transparent`; `currentcolor`; or `light-dark(<light-color>, <dark-color>)` containing exactly two of these colours |
+| folder list | one or more comma-separated JSON-style strings containing non-empty, trimmed, non-control folder names of at most 40 Unicode scalar values |
 | length | a non-negative number with `px`, `rem`, `em`, `ch`, `ex`, `vw`, `vh`, `vmin`, `vmax` or `%`, or bare `0` |
 | number | a non-negative unitless number |
 
@@ -200,9 +213,11 @@ Refused outright, with a message naming the reason:
 - Pico variables outside the list, including `--pico-font-family` and the
   `--pico-icon-*` data URIs
 
-So a theme can recolour and re-space the template, and that is all. It cannot
-position anything, hide anything, overlay anything, or load anything. A profile
-you visit cannot use its theme to disguise itself as another part of the site.
+Pico declarations can recolour and re-space the template, and that is all.
+Layout declarations may choose the initial open state and order of folders, but
+they cannot remove a visible entry or prevent a reader from opening a fold.
+Nothing can position, overlay, or load anything, so a profile you visit cannot
+use its presentation to disguise itself as another part of the site.
 
 ## Setting one
 
@@ -222,6 +237,9 @@ devsite theme clear
 ```css
 /* my-theme.css */
 --devsite-scheme: auto;
+--devsite-folders: closed;
+--devsite-open-folders: "Profiles";
+--devsite-folder-order: "Profiles", "Services", "Games";
 --pico-background-color: light-dark(#fefae0, #283618);
 --pico-color: light-dark(#283618, #fefae0);
 --pico-primary: light-dark(#bc6c25, #dda15e);
@@ -237,8 +255,8 @@ Rejections are specific and name the offending declaration:
 
 ```
 --pico-primary: wine;   →  `--pico-primary: wine` — expected a colour, e.g. `#7b3fe4`, …
---pico-primary-color:   →  `--pico-primary-color` is not a theme property — did you mean `--pico-primary`?
-body { color: red }     →  `{` is not allowed: a theme is a list of `--pico-…: value;` declarations
+--pico-primary-color:   →  `--pico-primary-color` is not a profile property — did you mean `--pico-primary`?
+body { color: red }     →  `{` is not allowed: a profile is a list of validated declarations
 ```
 
 ## Storage

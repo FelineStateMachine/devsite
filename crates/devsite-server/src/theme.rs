@@ -1,8 +1,9 @@
-//! User themes.
+//! User profile presentation.
 //!
-//! A profile's look is not a stylesheet. It is a list of assignments to named
-//! Pico variables, each with a declared value grammar — so "is this theme
-//! valid?" is a question with a mechanical answer rather than a judgement call.
+//! A profile's presentation is not a stylesheet. It is a list of assignments to
+//! named Pico variables and dev.site layout settings, each with a declared value
+//! grammar — so "is this valid?" is a question with a mechanical answer rather
+//! than a judgement call.
 //!
 //! Two things follow from that, and both are the point:
 //!
@@ -10,21 +11,28 @@
 //!   `!important`. A theme can only recolour and re-space what the profile
 //!   template already lays out; it cannot position, hide, or overlay anything.
 //! - **It cannot inject.** Every property name is one of the `&'static str`s in
-//!   [`PROPERTIES`], and every value has passed a grammar whose alphabet is
-//!   `[0-9a-z#%.,/()+- ]`. Neither can carry `<`, `"` or `}`, so the emitted
-//!   rule is safe to inline in a `<style>` element without further escaping.
+//!   [`PROPERTIES`]. Pico values have passed a restricted CSS-value grammar;
+//!   quoted folder names have passed a bounded JSON-string grammar and never
+//!   enter the generated `<style>` rule at all.
 //!
-//! The variables below all exist in the vendored Pico 2.1.1. A name that Pico
-//! does not define would be accepted, stored, and do nothing — which is exactly
-//! the silent failure this list is here to prevent.
+//! Every `--pico-*` variable below exists in the vendored Pico 2.1.1; every
+//! `--devsite-*` setting has an explicit renderer consumer. An unknown name is
+//! rejected instead of being stored and quietly doing nothing.
 
 use serde::Serialize;
 
-/// Longest accepted source, before parsing. A theme is a few dozen short lines.
+/// Longest accepted source, before parsing. Presentation is a few dozen short lines.
 pub const MAX_INPUT: usize = 4096;
 /// Longest accepted value. This leaves room for two functional colours inside
 /// `light-dark()` without changing the overall [`MAX_INPUT`] bound.
 pub const MAX_VALUE: usize = 128;
+/// Folder names are labels, not descriptions. Count Unicode scalar values so
+/// non-ASCII text remains valid while the stored and rendered label stays small.
+pub const MAX_FOLDER_NAME: usize = 40;
+/// A layout list remains well below the whole-document limit even when it names
+/// many folders. This also bounds the work done by the browser renderer.
+const MAX_LAYOUT_FOLDERS: usize = 64;
+const MAX_LAYOUT_VALUE: usize = 3072;
 
 /// One validated assignment. `property` is borrowed from [`PROPERTIES`], so a
 /// stored declaration cannot name anything outside the table.
@@ -45,17 +53,25 @@ enum Kind {
     Number,
     /// One of a fixed set of words.
     Keyword(&'static [&'static str]),
+    /// One or more JSON-style quoted folder names, separated by commas.
+    FolderNames,
 }
 
 /// The one key that is not a Pico variable: it chooses which of Pico's own
 /// palettes the profile starts from, by setting `data-theme` on the page.
 pub const SCHEME: &str = "--devsite-scheme";
+pub const FOLDERS: &str = "--devsite-folders";
+pub const OPEN_FOLDERS: &str = "--devsite-open-folders";
+pub const FOLDER_ORDER: &str = "--devsite-folder-order";
 
-/// Every property a theme may set, with the grammar of its value.
+/// Every profile presentation property, with the grammar of its value.
 ///
-/// Ordered as it is documented: scheme, then colour, then metrics, then type.
+/// Ordered as documented: dev.site controls, then colour, metrics, and type.
 const PROPERTIES: &[(&str, Kind)] = &[
     (SCHEME, Kind::Keyword(&["light", "dark", "auto"])),
+    (FOLDERS, Kind::Keyword(&["open", "closed"])),
+    (OPEN_FOLDERS, Kind::FolderNames),
+    (FOLDER_ORDER, Kind::FolderNames),
     // -- surfaces and text ---------------------------------------------------
     ("--pico-background-color", Kind::Color),
     ("--pico-color", Kind::Color),
@@ -144,18 +160,18 @@ pub fn parse(input: &str) -> Result<Vec<Declaration>, String> {
     let source = strip_comments(input)?;
     let mut declarations: Vec<Declaration> = Vec::new();
 
-    for chunk in source.split(';') {
+    for chunk in split_declarations(&source) {
         let chunk = chunk.trim();
         if chunk.is_empty() {
             continue;
         }
-        if let Some(bad) = chunk.chars().find(|c| "{}@<>\"'\\".contains(*c)) {
+        if let Some(bad) = find_outside_quotes(chunk, |c| "{}@<>'\\".contains(c)) {
             return Err(format!(
-                "`{bad}` is not allowed: a theme is a list of `--pico-…: value;` \
-                 declarations, not a stylesheet"
+                "`{bad}` is not allowed: a profile is a list of validated \
+                 `--pico-…` and `--devsite-…` declarations, not a stylesheet"
             ));
         }
-        if chunk.contains('!') {
+        if find_outside_quotes(chunk, |c| c == '!').is_some() {
             return Err(
                 "`!important` is not allowed; a theme never has to out-rank anything".into(),
             );
@@ -165,13 +181,10 @@ pub fn parse(input: &str) -> Result<Vec<Declaration>, String> {
             .split_once(':')
             .ok_or_else(|| format!("`{chunk}` is missing a `:`"))?;
         let name = name.trim().to_ascii_lowercase();
-        let value = normalize_whitespace(value);
+        let raw_value = value.trim();
 
-        if value.is_empty() {
+        if raw_value.is_empty() {
             return Err(format!("`{name}` has no value"));
-        }
-        if value.len() > MAX_VALUE {
-            return Err(format!("the value of `{name}` is too long"));
         }
 
         let (property, kind) = PROPERTIES
@@ -179,9 +192,9 @@ pub fn parse(input: &str) -> Result<Vec<Declaration>, String> {
             .find(|(known, _)| *known == name)
             .ok_or_else(|| unknown_property(&name))?;
 
-        if !kind.accepts(&value) {
-            return Err(format!("`{name}: {value}` — expected {}", kind.describe()));
-        }
+        let value = kind
+            .canonicalize(raw_value)
+            .ok_or_else(|| format!("`{name}: {raw_value}` — expected {}", kind.describe()))?;
 
         // Last one wins, as it would in a real rule block, but the theme keeps
         // the order it was written in. Collapsing duplicates here is also what
@@ -204,7 +217,7 @@ pub fn to_css(declarations: &[Declaration]) -> String {
         .collect()
 }
 
-/// Every property a theme may set, for `devsite theme properties` and the docs.
+/// Every profile presentation property, for `devsite theme properties` and the docs.
 pub fn properties() -> impl Iterator<Item = (&'static str, String)> {
     PROPERTIES
         .iter()
@@ -214,31 +227,54 @@ pub fn properties() -> impl Iterator<Item = (&'static str, String)> {
 fn unknown_property(name: &str) -> String {
     // A near miss is nearly always a typo, or a real Pico variable that is not
     // offered here, so point at the most specific thing that is.
-    let stem = name.trim_start_matches("--pico-").trim_start_matches("--");
+    let stem = name
+        .trim_start_matches("--pico-")
+        .trim_start_matches("--devsite-")
+        .trim_start_matches("--");
     let closest = PROPERTIES
         .iter()
         .map(|(known, _)| *known)
         .filter(|known| {
-            let known_stem = known.trim_start_matches("--pico-").trim_start_matches("--");
+            let known_stem = known
+                .trim_start_matches("--pico-")
+                .trim_start_matches("--devsite-")
+                .trim_start_matches("--");
             stem.len() >= 4 && (stem.contains(known_stem) || known_stem.contains(stem))
         })
         .max_by_key(|known| known.len());
 
     match closest {
-        Some(known) => format!("`{name}` is not a theme property — did you mean `{known}`?"),
+        Some(known) => format!("`{name}` is not a profile property — did you mean `{known}`?"),
         None => {
-            format!("`{name}` is not a theme property; run `devsite theme properties` for the list")
+            format!(
+                "`{name}` is not a profile property; run `devsite theme properties` for the list"
+            )
         }
     }
 }
 
 impl Kind {
-    fn accepts(&self, value: &str) -> bool {
+    fn canonicalize(&self, raw: &str) -> Option<String> {
+        if matches!(self, Kind::FolderNames) {
+            if raw.len() > MAX_LAYOUT_VALUE {
+                return None;
+            }
+            return parse_folder_names(raw);
+        }
+
+        let value = normalize_whitespace(raw);
+        if value.len() > MAX_VALUE {
+            return None;
+        }
         match self {
-            Kind::Color => is_color(value),
-            Kind::Length => is_length(value),
-            Kind::Number => is_number(value),
-            Kind::Keyword(allowed) => allowed.contains(&value.to_ascii_lowercase().as_str()),
+            Kind::Color => is_color(&value).then_some(value),
+            Kind::Length => is_length(&value).then_some(value),
+            Kind::Number => is_number(&value).then_some(value),
+            Kind::Keyword(allowed) => {
+                let canonical = value.to_ascii_lowercase();
+                allowed.contains(&canonical.as_str()).then_some(canonical)
+            }
+            Kind::FolderNames => unreachable!(),
         }
     }
 
@@ -248,6 +284,9 @@ impl Kind {
             Kind::Length => "a length, e.g. `0.5rem`, `12px` or `0`".into(),
             Kind::Number => "a number, e.g. `1.5`".into(),
             Kind::Keyword(allowed) => format!("one of {}", allowed.join(", ")),
+            Kind::FolderNames => {
+                "one or more quoted folder names, e.g. `\"Profiles\", \"Services\"`".into()
+            }
         }
     }
 }
@@ -345,19 +384,126 @@ fn is_number(value: &str) -> bool {
         && value.len() <= 8
 }
 
+fn parse_folder_names(value: &str) -> Option<String> {
+    let names: Vec<String> = serde_json::from_str(&format!("[{value}]")).ok()?;
+    if names.is_empty() || names.len() > MAX_LAYOUT_FOLDERS {
+        return None;
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for name in &names {
+        if name.is_empty()
+            || name.trim() != name
+            || name.chars().count() > MAX_FOLDER_NAME
+            || name.chars().any(char::is_control)
+            || !seen.insert(name)
+        {
+            return None;
+        }
+    }
+
+    Some(
+        names
+            .iter()
+            .map(|name| serde_json::to_string(name).expect("a string always serializes"))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
 fn strip_comments(input: &str) -> Result<String, String> {
     let mut out = String::with_capacity(input.len());
-    let mut rest = input;
-    while let Some(start) = rest.find("/*") {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 2..];
-        let end = after.find("*/").ok_or("a comment is not closed")?;
-        // A comment separates tokens, so it cannot simply vanish.
-        out.push(' ');
-        rest = &after[end + 2..];
+    let mut chars = input.chars().peekable();
+    let mut quoted = false;
+    let mut escaped = false;
+
+    while let Some(character) = chars.next() {
+        if quoted {
+            out.push(character);
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+            continue;
+        }
+
+        if character == '"' {
+            quoted = true;
+            out.push(character);
+        } else if character == '/' && chars.peek() == Some(&'*') {
+            chars.next();
+            let mut previous = '\0';
+            let mut closed = false;
+            for comment in chars.by_ref() {
+                if previous == '*' && comment == '/' {
+                    closed = true;
+                    break;
+                }
+                previous = comment;
+            }
+            if !closed {
+                return Err("a comment is not closed".into());
+            }
+            // A comment separates tokens, so it cannot simply vanish.
+            out.push(' ');
+        } else {
+            out.push(character);
+        }
     }
-    out.push_str(rest);
+
+    if quoted {
+        return Err("a quoted folder name is not closed".into());
+    }
     Ok(out)
+}
+
+fn split_declarations(input: &str) -> Vec<&str> {
+    let mut chunks = Vec::new();
+    let mut start = 0;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (index, character) in input.char_indices() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+        } else if character == '"' {
+            quoted = true;
+        } else if character == ';' {
+            chunks.push(&input[start..index]);
+            start = index + 1;
+        }
+    }
+    chunks.push(&input[start..]);
+    chunks
+}
+
+fn find_outside_quotes(input: &str, predicate: impl Fn(char) -> bool) -> Option<char> {
+    let mut quoted = false;
+    let mut escaped = false;
+    for character in input.chars() {
+        if quoted {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                quoted = false;
+            }
+        } else if character == '"' {
+            quoted = true;
+        } else if predicate(character) {
+            return Some(character);
+        }
+    }
+    None
 }
 
 fn normalize_whitespace(value: &str) -> String {
@@ -536,6 +682,75 @@ mod tests {
             theme,
             "--pico-primary: #7b3fe4;\n--pico-border-radius: 0.5rem;\n"
         );
+    }
+
+    #[test]
+    fn accepts_and_canonicalizes_profile_folder_layout() {
+        let source = r#"
+            --devsite-folders: closed;
+            --devsite-open-folders: "Profiles";
+            --devsite-folder-order: "Profiles","Services",  "Games";
+        "#;
+        let canonical = css(source).unwrap();
+        assert_eq!(
+            canonical,
+            "--devsite-folders: closed;\n\
+             --devsite-open-folders: \"Profiles\";\n\
+             --devsite-folder-order: \"Profiles\", \"Services\", \"Games\";\n"
+        );
+        assert_eq!(css(&canonical).unwrap(), canonical);
+    }
+
+    #[test]
+    fn folder_layout_preserves_bounded_unicode_and_json_escapes() {
+        let source = r#"--devsite-open-folders: "日本語 🧰", "say \"hi\" \\ path", "semi; /* literal */", "</style>";"#;
+        let canonical = css(source).unwrap();
+        assert_eq!(
+            canonical,
+            r#"--devsite-open-folders: "日本語 🧰", "say \"hi\" \\ path", "semi; /* literal */", "</style>";
+"#
+        );
+        assert_eq!(css(&canonical).unwrap(), canonical);
+    }
+
+    #[test]
+    fn folder_layout_rejects_invalid_or_unbounded_name_lists() {
+        let overlong = "x".repeat(MAX_FOLDER_NAME + 1);
+        let too_many = (0..=MAX_LAYOUT_FOLDERS)
+            .map(|index| format!("\"folder-{index}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        for value in [
+            "Profiles".to_string(),
+            "\"\"".to_string(),
+            "\" Profiles\"".to_string(),
+            "\"Profiles \"".to_string(),
+            "\"Profiles\", \"Profiles\"".to_string(),
+            "\"Profiles\",".to_string(),
+            "[\"Profiles\"]".to_string(),
+            "42".to_string(),
+            "\"two\\nlines\"".to_string(),
+            format!("\"{overlong}\""),
+            too_many,
+        ] {
+            assert!(
+                parse(&format!("--devsite-open-folders: {value};")).is_err(),
+                "{value:?} should be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn folder_default_accepts_only_open_or_closed() {
+        assert!(parse("--devsite-folders: open;").is_ok());
+        assert!(parse("--devsite-folders: closed;").is_ok());
+        assert_eq!(
+            css("--devsite-folders: CLOSED;").unwrap(),
+            "--devsite-folders: closed;\n"
+        );
+        for value in ["auto", "true", "none", "\"closed\""] {
+            assert!(parse(&format!("--devsite-folders: {value};")).is_err());
+        }
     }
 
     #[test]
@@ -785,6 +1000,21 @@ mod tests {
                 .value
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b"#%.,/()+- ".contains(&b)));
+        }
+
+        // Layout declarations may contain arbitrary printable folder labels,
+        // but are distinguishable by name so the browser can keep them out of
+        // the generated Pico rule.
+        for declaration in parse(
+            r#"--devsite-open-folders: "</style><script>alert(1)</script>"; --pico-primary: red;"#,
+        )
+        .unwrap()
+        {
+            if declaration.property.starts_with("--pico-") {
+                assert!(!declaration.value.contains('<'));
+                assert!(!declaration.value.contains('>'));
+                assert!(!declaration.value.contains('"'));
+            }
         }
     }
 

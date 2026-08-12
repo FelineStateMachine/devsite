@@ -284,15 +284,17 @@ pub struct ProfileResponse {
     pub handle: String,
     pub entries: Vec<ProfileEntry>,
     pub shared_with_me: Vec<ProfileEntry>,
-    /// The owner's theme: validated `--pico-*` assignments, in the order they
-    /// were written. The page turns these into one rule scoped to the profile.
+    /// The owner's presentation: validated `--pico-*` theme assignments and
+    /// `--devsite-*` layout settings, in the order they were written. The page
+    /// turns only the Pico declarations into a scoped rule.
     pub theme: Vec<theme::Declaration>,
 }
 
 #[derive(Deserialize)]
 pub struct ThemeRequest {
-    /// Declarations only — `--pico-border-radius: 0.5rem;` and so on. Anything
-    /// that is not on the whitelist is a 400 with a reason, never a silent drop.
+    /// Declarations only — `--pico-border-radius: 0.5rem;`,
+    /// `--devsite-folders: closed;`, and so on. Anything outside the whitelist
+    /// is a 400 with a reason, never a silent drop.
     pub css: String,
 }
 
@@ -673,9 +675,6 @@ fn resolve_share_accounts(
     Ok(viewers)
 }
 
-/// Longest folder name. It is a label on a fold, not a description.
-const MAX_FOLDER: usize = 40;
-
 /// Check a folder name, treating blank as none.
 ///
 /// A folder has no existence of its own — it is this string, repeated across the
@@ -685,9 +684,10 @@ fn validate_folder(folder: Option<&str>) -> ApiResult<Option<String>> {
     let Some(folder) = folder.map(str::trim).filter(|f| !f.is_empty()) else {
         return Ok(None);
     };
-    if folder.chars().count() > MAX_FOLDER {
+    if folder.chars().count() > theme::MAX_FOLDER_NAME {
         return Err(ApiError::bad_request(format!(
-            "a folder name may be at most {MAX_FOLDER} characters"
+            "a folder name may be at most {} characters",
+            theme::MAX_FOLDER_NAME
         )));
     }
     // Control characters would survive HTML-escaping and come out as invisible
@@ -995,7 +995,7 @@ async fn revoke_machine_credential(
 
 // -- themes --------------------------------------------------------------------
 
-/// The properties a theme may set, and what each one accepts.
+/// The presentation properties a profile may set, and what each one accepts.
 ///
 /// Served by the same binary that enforces the list, so the CLI, the website and
 /// the docs cannot drift from what is actually accepted.
@@ -1449,8 +1449,8 @@ mod tests {
 
     #[test]
     fn folder_names_are_bounded_and_printable() {
-        assert!(validate_folder(Some(&"x".repeat(MAX_FOLDER))).is_ok());
-        assert!(validate_folder(Some(&"x".repeat(MAX_FOLDER + 1))).is_err());
+        assert!(validate_folder(Some(&"x".repeat(theme::MAX_FOLDER_NAME))).is_ok());
+        assert!(validate_folder(Some(&"x".repeat(theme::MAX_FOLDER_NAME + 1))).is_err());
         assert!(validate_folder(Some("Games\u{0}")).is_err());
         assert!(validate_folder(Some("two\nlines")).is_err());
     }

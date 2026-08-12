@@ -177,8 +177,10 @@ top-level sharing section. Every site retains its own visibility, invitation sta
 revocation; services additionally enforce access for every tunnel connection.
 
 The signed-in homepage is the dashboard. It manages approved and pending shares, revocable
-machine credentials, the private-only profile setting, and logout. Themes remain a bounded
-list of approved Pico CSS variables rather than arbitrary CSS.
+machine credentials, the private-only profile setting, and logout. Profile presentation
+remains a bounded list of approved declarations rather than arbitrary CSS: Pico variables
+control the theme, while `--devsite-folders`, `--devsite-open-folders`, and
+`--devsite-folder-order` control the initial semantic folder layout.
 
 ## Local development
 

@@ -149,7 +149,10 @@ function applyTheme(handle, declarations = []) {
   }
 
   const body = declarations
-    .filter((d) => d.property !== '--devsite-scheme')
+    // Layout declarations are data for renderProfile, not CSS. Restricting the
+    // generated rule positively to Pico variables keeps quoted folder names out
+    // of the style element regardless of what printable Unicode they contain.
+    .filter((d) => d.property.startsWith('--pico-'))
     .map((d) => `  ${d.property}: ${d.value};`)
     .join('\n');
   $('profile-theme').textContent = body
@@ -310,12 +313,56 @@ function foldersOf(entries) {
   return folders;
 }
 
-/// One fold. `<details open>` — a profile's job is to show what is on it, so a
-/// folder groups without hiding, and collapsing is the reader's choice.
-function folder(name, items) {
+/// Validated layout declarations arrive in canonical JSON-string-list form.
+/// Parsing them again here is assembly rather than trust: malformed values can
+/// only mean an older/newer server mismatch, in which case the safe default is
+/// the original all-open, first-appearance layout.
+function profileLayout(declarations = []) {
+  const value = (property) =>
+    declarations.find((declaration) => declaration.property === property)?.value;
+  const names = (property) => {
+    const list = value(property);
+    if (!list) return [];
+    try {
+      const parsed = JSON.parse(`[${list}]`);
+      return Array.isArray(parsed) && parsed.every((name) => typeof name === 'string')
+        ? parsed
+        : [];
+    } catch {
+      return [];
+    }
+  };
+  return {
+    foldersOpen: value('--devsite-folders') !== 'closed',
+    openFolders: new Set(names('--devsite-open-folders')),
+    folderOrder: names('--devsite-folder-order'),
+  };
+}
+
+/// Named folders come first in the requested order. A name that does not exist
+/// for this viewer is ignored, and unlisted visible folders retain the order in
+/// which they first appeared.
+function orderedFolders(folders, order) {
+  const result = [];
+  const placed = new Set();
+  for (const name of order) {
+    if (folders.has(name)) {
+      result.push([name, folders.get(name)]);
+      placed.add(name);
+    }
+  }
+  for (const entry of folders) {
+    if (!placed.has(entry[0])) result.push(entry);
+  }
+  return result;
+}
+
+/// One semantic fold. Layout declarations choose only its initial state; once
+/// rendered, the reader owns the ordinary `<details>` interaction.
+function folder(name, items, layout) {
   const details = document.createElement('details');
   details.className = 'folder';
-  details.open = true;
+  details.open = layout.foldersOpen || layout.openFolders.has(name);
   details.innerHTML =
     `<summary>${esc(name)} <small>${items.length}</small></summary>`;
   details.append(entryList(items));
@@ -325,6 +372,7 @@ function folder(name, items) {
 function renderProfile(profile) {
   setPageTitle(`@${profile.handle}`);
   applyTheme(profile.handle, profile.theme);
+  const layout = profileLayout(profile.theme);
   main.innerHTML = '';
 
   const article = document.createElement('article');
@@ -348,8 +396,8 @@ function renderProfile(profile) {
     const loose = entries.filter((item) => !item.folder);
     if (loose.length) article.append(entryList(loose));
 
-    for (const [name, items] of foldersOf(entries)) {
-      article.append(folder(name, items));
+    for (const [name, items] of orderedFolders(foldersOf(entries), layout.folderOrder)) {
+      article.append(folder(name, items, layout));
     }
   } else {
     const empty = document.createElement('p');

@@ -131,8 +131,9 @@ enum DaemonCommand {
     Status,
 }
 
-/// A theme is a list of `--pico-*` declarations, checked by the control plane
-/// against a fixed whitelist. There is no theme dropdown, and no arbitrary CSS.
+/// Profile presentation is a list of `--pico-*` theme declarations and bounded
+/// `--devsite-*` layout settings checked by the control plane. There is no theme
+/// dropdown and no arbitrary CSS.
 #[derive(Subcommand)]
 enum ThemeCommand {
     /// Print the theme currently applied to your profile.
@@ -144,7 +145,7 @@ enum ThemeCommand {
     },
     /// Remove your theme and go back to the defaults.
     Clear,
-    /// List every property a theme may set, and what each one accepts.
+    /// List every profile presentation property and what it accepts.
     Properties,
 }
 
