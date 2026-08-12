@@ -118,7 +118,10 @@ const PROPERTIES: &[(&str, Kind)] = &[
     // The typeface is fixed: Open Sans, at one of its two weights. There is no
     // --pico-font-family here, and that is deliberate.
     ("--pico-font-weight", Kind::Keyword(&["400", "700"])),
-    ("--pico-text-decoration", Kind::Keyword(&["none", "underline"])),
+    (
+        "--pico-text-decoration",
+        Kind::Keyword(&["none", "underline"]),
+    ),
 ];
 
 /// Read a theme, or say precisely what is wrong with it.
@@ -145,7 +148,9 @@ pub fn parse(input: &str) -> Result<Vec<Declaration>, String> {
             ));
         }
         if chunk.contains('!') {
-            return Err("`!important` is not allowed; a theme never has to out-rank anything".into());
+            return Err(
+                "`!important` is not allowed; a theme never has to out-rank anything".into(),
+            );
         }
 
         let (name, value) = chunk
@@ -193,7 +198,9 @@ pub fn to_css(declarations: &[Declaration]) -> String {
 
 /// Every property a theme may set, for `devsite theme properties` and the docs.
 pub fn properties() -> impl Iterator<Item = (&'static str, String)> {
-    PROPERTIES.iter().map(|(name, kind)| (*name, kind.describe()))
+    PROPERTIES
+        .iter()
+        .map(|(name, kind)| (*name, kind.describe()))
 }
 
 fn unknown_property(name: &str) -> String {
@@ -211,7 +218,9 @@ fn unknown_property(name: &str) -> String {
 
     match closest {
         Some(known) => format!("`{name}` is not a theme property — did you mean `{known}`?"),
-        None => format!("`{name}` is not a theme property; run `devsite theme properties` for the list"),
+        None => {
+            format!("`{name}` is not a theme property; run `devsite theme properties` for the list")
+        }
     }
 }
 
@@ -265,7 +274,9 @@ fn is_length(value: &str) -> bool {
     if value == "0" {
         return true;
     }
-    const UNITS: &[&str] = &["px", "rem", "em", "ch", "ex", "vw", "vh", "vmin", "vmax", "%"];
+    const UNITS: &[&str] = &[
+        "px", "rem", "em", "ch", "ex", "vw", "vh", "vmin", "vmax", "%",
+    ];
     UNITS.iter().any(|unit| {
         value
             .strip_suffix(unit)
@@ -303,28 +314,154 @@ fn normalize_whitespace(value: &str) -> String {
 
 /// The CSS named colours, sorted for `binary_search`.
 const NAMED_COLORS: &[&str] = &[
-    "aliceblue", "antiquewhite", "aqua", "aquamarine", "azure", "beige", "bisque", "black",
-    "blanchedalmond", "blue", "blueviolet", "brown", "burlywood", "cadetblue", "chartreuse",
-    "chocolate", "coral", "cornflowerblue", "cornsilk", "crimson", "cyan", "darkblue", "darkcyan",
-    "darkgoldenrod", "darkgray", "darkgreen", "darkgrey", "darkkhaki", "darkmagenta",
-    "darkolivegreen", "darkorange", "darkorchid", "darkred", "darksalmon", "darkseagreen",
-    "darkslateblue", "darkslategray", "darkslategrey", "darkturquoise", "darkviolet", "deeppink",
-    "deepskyblue", "dimgray", "dimgrey", "dodgerblue", "firebrick", "floralwhite", "forestgreen",
-    "fuchsia", "gainsboro", "ghostwhite", "gold", "goldenrod", "gray", "green", "greenyellow",
-    "grey", "honeydew", "hotpink", "indianred", "indigo", "ivory", "khaki", "lavender",
-    "lavenderblush", "lawngreen", "lemonchiffon", "lightblue", "lightcoral", "lightcyan",
-    "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey", "lightpink", "lightsalmon",
-    "lightseagreen", "lightskyblue", "lightslategray", "lightslategrey", "lightsteelblue",
-    "lightyellow", "lime", "limegreen", "linen", "magenta", "maroon", "mediumaquamarine",
-    "mediumblue", "mediumorchid", "mediumpurple", "mediumseagreen", "mediumslateblue",
-    "mediumspringgreen", "mediumturquoise", "mediumvioletred", "midnightblue", "mintcream",
-    "mistyrose", "moccasin", "navajowhite", "navy", "oldlace", "olive", "olivedrab", "orange",
-    "orangered", "orchid", "palegoldenrod", "palegreen", "paleturquoise", "palevioletred",
-    "papayawhip", "peachpuff", "peru", "pink", "plum", "powderblue", "purple", "rebeccapurple",
-    "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown", "seagreen", "seashell",
-    "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey", "snow", "springgreen",
-    "steelblue", "tan", "teal", "thistle", "tomato", "turquoise", "violet", "wheat", "white",
-    "whitesmoke", "yellow", "yellowgreen",
+    "aliceblue",
+    "antiquewhite",
+    "aqua",
+    "aquamarine",
+    "azure",
+    "beige",
+    "bisque",
+    "black",
+    "blanchedalmond",
+    "blue",
+    "blueviolet",
+    "brown",
+    "burlywood",
+    "cadetblue",
+    "chartreuse",
+    "chocolate",
+    "coral",
+    "cornflowerblue",
+    "cornsilk",
+    "crimson",
+    "cyan",
+    "darkblue",
+    "darkcyan",
+    "darkgoldenrod",
+    "darkgray",
+    "darkgreen",
+    "darkgrey",
+    "darkkhaki",
+    "darkmagenta",
+    "darkolivegreen",
+    "darkorange",
+    "darkorchid",
+    "darkred",
+    "darksalmon",
+    "darkseagreen",
+    "darkslateblue",
+    "darkslategray",
+    "darkslategrey",
+    "darkturquoise",
+    "darkviolet",
+    "deeppink",
+    "deepskyblue",
+    "dimgray",
+    "dimgrey",
+    "dodgerblue",
+    "firebrick",
+    "floralwhite",
+    "forestgreen",
+    "fuchsia",
+    "gainsboro",
+    "ghostwhite",
+    "gold",
+    "goldenrod",
+    "gray",
+    "green",
+    "greenyellow",
+    "grey",
+    "honeydew",
+    "hotpink",
+    "indianred",
+    "indigo",
+    "ivory",
+    "khaki",
+    "lavender",
+    "lavenderblush",
+    "lawngreen",
+    "lemonchiffon",
+    "lightblue",
+    "lightcoral",
+    "lightcyan",
+    "lightgoldenrodyellow",
+    "lightgray",
+    "lightgreen",
+    "lightgrey",
+    "lightpink",
+    "lightsalmon",
+    "lightseagreen",
+    "lightskyblue",
+    "lightslategray",
+    "lightslategrey",
+    "lightsteelblue",
+    "lightyellow",
+    "lime",
+    "limegreen",
+    "linen",
+    "magenta",
+    "maroon",
+    "mediumaquamarine",
+    "mediumblue",
+    "mediumorchid",
+    "mediumpurple",
+    "mediumseagreen",
+    "mediumslateblue",
+    "mediumspringgreen",
+    "mediumturquoise",
+    "mediumvioletred",
+    "midnightblue",
+    "mintcream",
+    "mistyrose",
+    "moccasin",
+    "navajowhite",
+    "navy",
+    "oldlace",
+    "olive",
+    "olivedrab",
+    "orange",
+    "orangered",
+    "orchid",
+    "palegoldenrod",
+    "palegreen",
+    "paleturquoise",
+    "palevioletred",
+    "papayawhip",
+    "peachpuff",
+    "peru",
+    "pink",
+    "plum",
+    "powderblue",
+    "purple",
+    "rebeccapurple",
+    "red",
+    "rosybrown",
+    "royalblue",
+    "saddlebrown",
+    "salmon",
+    "sandybrown",
+    "seagreen",
+    "seashell",
+    "sienna",
+    "silver",
+    "skyblue",
+    "slateblue",
+    "slategray",
+    "slategrey",
+    "snow",
+    "springgreen",
+    "steelblue",
+    "tan",
+    "teal",
+    "thistle",
+    "tomato",
+    "turquoise",
+    "violet",
+    "wheat",
+    "white",
+    "whitesmoke",
+    "yellow",
+    "yellowgreen",
 ];
 
 #[cfg(test)]
@@ -343,7 +480,10 @@ mod tests {
     #[test]
     fn accepts_a_plain_theme() {
         let theme = css("--pico-primary: #7b3fe4;\n--pico-border-radius: 0.5rem;").unwrap();
-        assert_eq!(theme, "--pico-primary: #7b3fe4;\n--pico-border-radius: 0.5rem;\n");
+        assert_eq!(
+            theme,
+            "--pico-primary: #7b3fe4;\n--pico-border-radius: 0.5rem;\n"
+        );
     }
 
     #[test]

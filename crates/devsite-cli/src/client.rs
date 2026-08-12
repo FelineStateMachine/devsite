@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
+#[derive(Clone)]
 pub struct ControlPlane {
     base: String,
     token: Option<String>,

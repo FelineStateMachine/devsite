@@ -48,7 +48,8 @@ impl Issuer {
     pub fn load_or_create(state_dir: &Path, issuer_name: &str) -> Result<Self> {
         let path = state_dir.join("capability_signing.key");
         let key = if path.exists() {
-            let raw = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            let raw =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             let bytes: [u8; 32] = raw
                 .as_slice()
                 .try_into()
@@ -58,7 +59,10 @@ impl Issuer {
             std::fs::create_dir_all(state_dir)?;
             let key = SigningKey::generate(&mut rand::rngs::OsRng);
             write_private(&path, &key.to_bytes())?;
-            tracing::info!("generated a new capability signing key at {}", path.display());
+            tracing::info!(
+                "generated a new capability signing key at {}",
+                path.display()
+            );
             key
         };
         Ok(Self {
@@ -77,14 +81,14 @@ impl Issuer {
     }
 
     /// Mint a grant. Every field is supplied by the caller from verified state — nothing
-    /// here comes from the browser except `browser_key`, which is exactly what the daemon
+    /// here comes from the client except `client_key`, which is exactly what the daemon
     /// will check the connection against.
     pub fn issue(
         &self,
         viewer: AccountId,
         resource: ResourceId,
         audience: KeyBytes,
-        browser_key: KeyBytes,
+        client_key: KeyBytes,
         now: u64,
     ) -> Result<SignedCapability> {
         let mut nonce = [0u8; 16];
@@ -97,8 +101,8 @@ impl Issuer {
             viewer,
             resource,
             audience,
-            browser_key,
-            permission: Permission::HttpRead,
+            client_key,
+            permission: Permission::TcpConnect,
             issued_at: now,
             expires_at: now + DEFAULT_LIFETIME_SECS,
             nonce,
@@ -119,7 +123,7 @@ fn write_private(path: &PathBuf, contents: &[u8]) -> Result<()> {
             .mode(0o600)
             .open(path)?;
         file.write_all(contents)?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {
@@ -151,7 +155,12 @@ mod tests {
             .verify_for(&issuer.verifying_key(), &[7; 32], &[8; 32], 1000)
             .is_ok());
         assert!(cap
-            .verify_for(&issuer.verifying_key(), &[7; 32], &[8; 32], 1000 + DEFAULT_LIFETIME_SECS + 1)
+            .verify_for(
+                &issuer.verifying_key(),
+                &[7; 32],
+                &[8; 32],
+                1000 + DEFAULT_LIFETIME_SECS + 1
+            )
             .is_err());
 
         std::fs::remove_dir_all(&dir).ok();

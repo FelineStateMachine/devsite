@@ -5,18 +5,17 @@
 //! "not shared with you" could enumerate a profile's private services.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 
 use devsite_proto::capability::{CapabilityClaims, KeyBytes, Permission, SignedCapability};
-use devsite_proto::wire::Method;
 use devsite_proto::ResourceId;
 use ed25519_dalek::VerifyingKey;
-use url::Url;
 
-/// A request that passed every check, carrying the origin it resolved to.
+/// A request that passed every check, carrying the local target it resolved to.
 #[derive(Debug)]
 pub struct Authorized {
     pub claims: CapabilityClaims,
-    pub origin: Url,
+    pub target: SocketAddr,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,8 +24,6 @@ pub enum Denied {
     Capability,
     /// Well-formed and correctly signed, but names a resource this daemon does not serve.
     UnknownResource,
-    /// The grant does not cover this method.
-    MethodNotPermitted,
     /// This exact capability has already been used.
     Replayed,
 }
@@ -66,32 +63,27 @@ impl ReplayGuard {
 /// `Connection::remote_id()` — and never from anything inside the request frame.
 pub fn authorize(
     capability: &SignedCapability,
-    method: Method,
     control_plane_key: &VerifyingKey,
     my_endpoint: &KeyBytes,
     peer: &KeyBytes,
-    origins: &HashMap<ResourceId, Url>,
+    targets: &HashMap<ResourceId, SocketAddr>,
     replay: &mut ReplayGuard,
     now: u64,
 ) -> Result<Authorized, Denied> {
-    // Cryptography first: signature, audience, browser binding, expiry. Until this passes
+    // Cryptography first: signature, audience, client binding, expiry. Until this passes
     // the claims are just bytes a stranger sent us.
     let claims = capability
         .verify_for(control_plane_key, my_endpoint, peer, now)
         .map_err(|_| Denied::Capability)?;
 
-    match claims.permission {
-        Permission::HttpRead => {
-            if !matches!(method, Method::Get | Method::Head) {
-                return Err(Denied::MethodNotPermitted);
-            }
-        }
+    if claims.permission != Permission::TcpConnect {
+        return Err(Denied::Capability);
     }
 
-    let origin = origins
+    let target = targets
         .get(&claims.resource)
         .ok_or(Denied::UnknownResource)?
-        .clone();
+        .to_owned();
 
     // Last, because consuming the nonce has a side effect: a request that would have been
     // refused anyway must not burn a legitimate capability.
@@ -99,7 +91,7 @@ pub fn authorize(
         return Err(Denied::Replayed);
     }
 
-    Ok(Authorized { claims, origin })
+    Ok(Authorized { claims, target })
 }
 
 #[cfg(test)]
@@ -118,8 +110,8 @@ mod tests {
         ResourceId::from_bytes([2; 16])
     }
 
-    fn origins() -> HashMap<ResourceId, Url> {
-        HashMap::from([(resource(), Url::parse("http://127.0.0.1:4101").unwrap())])
+    fn targets() -> HashMap<ResourceId, SocketAddr> {
+        HashMap::from([(resource(), "127.0.0.1:4101".parse().unwrap())])
     }
 
     fn claims_with(nonce: [u8; 16], res: ResourceId) -> CapabilityClaims {
@@ -128,8 +120,8 @@ mod tests {
             viewer: AccountId::from_bytes([1; 16]),
             resource: res,
             audience: DAEMON,
-            browser_key: BROWSER,
-            permission: Permission::HttpRead,
+            client_key: BROWSER,
+            permission: Permission::TcpConnect,
             issued_at: NOW,
             expires_at: NOW + DEFAULT_LIFETIME_SECS,
             nonce,
@@ -145,11 +137,10 @@ mod tests {
         let cap = SignedCapability::sign(claims, key).unwrap();
         authorize(
             &cap,
-            Method::Get,
             &key.verifying_key(),
             &DAEMON,
             peer,
-            &origins(),
+            &targets(),
             replay,
             NOW,
         )
@@ -159,16 +150,27 @@ mod tests {
     fn allows_a_valid_request() {
         let key = SigningKey::from_bytes(&[9; 32]);
         let mut replay = ReplayGuard::default();
-        let ok = run(&key, &claims_with([1; 16], resource()), &BROWSER, &mut replay).unwrap();
-        assert_eq!(ok.origin.as_str(), "http://127.0.0.1:4101/");
+        let ok = run(
+            &key,
+            &claims_with([1; 16], resource()),
+            &BROWSER,
+            &mut replay,
+        )
+        .unwrap();
+        assert_eq!(ok.target, "127.0.0.1:4101".parse().unwrap());
     }
 
     #[test]
-    fn denies_a_capability_bound_to_another_browser() {
+    fn denies_a_capability_bound_to_another_client() {
         let key = SigningKey::from_bytes(&[9; 32]);
         let mut replay = ReplayGuard::default();
-        let denied = run(&key, &claims_with([1; 16], resource()), &[99; 32], &mut replay)
-            .unwrap_err();
+        let denied = run(
+            &key,
+            &claims_with([1; 16], resource()),
+            &[99; 32],
+            &mut replay,
+        )
+        .unwrap_err();
         assert_eq!(denied, Denied::Capability);
     }
 
@@ -179,8 +181,7 @@ mod tests {
         let key = SigningKey::from_bytes(&[9; 32]);
         let mut replay = ReplayGuard::default();
         let stranger = ResourceId::from_bytes([44; 16]);
-        let denied =
-            run(&key, &claims_with([1; 16], stranger), &BROWSER, &mut replay).unwrap_err();
+        let denied = run(&key, &claims_with([1; 16], stranger), &BROWSER, &mut replay).unwrap_err();
         assert_eq!(denied, Denied::UnknownResource);
     }
 
@@ -205,7 +206,10 @@ mod tests {
         let claims = claims_with([1; 16], resource());
 
         assert!(run(&key, &claims, &[99; 32], &mut replay).is_err());
-        assert!(replay.is_empty(), "a failed attempt must not record a nonce");
+        assert!(
+            replay.is_empty(),
+            "a failed attempt must not record a nonce"
+        );
         assert!(run(&key, &claims, &BROWSER, &mut replay).is_ok());
     }
 

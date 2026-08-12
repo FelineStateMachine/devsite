@@ -1,9 +1,6 @@
 //! The viewer side of the dev.site data plane.
 //!
-//! This crate compiles for both native and `wasm32-unknown-unknown`. The browser runs it
-//! through `devsite-web`; the integration tests run it natively. Keeping one
-//! implementation means the authorization behaviour proven by fast native tests is
-//! literally the same code the browser executes.
+//! Each accepted local TCP connection becomes one authenticated Iroh bidirectional stream.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -11,7 +8,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use devsite_proto::capability::SignedCapability;
-use devsite_proto::wire::{self, ErrorCode, HttpRequest, Method, Request, Response};
+use devsite_proto::wire::{self, ConnectRequest, ErrorCode, Request, Response};
 use devsite_proto::ALPN;
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, EndpointAddr, EndpointId};
@@ -25,13 +22,13 @@ use n0_future::time::timeout;
 /// a dead daemon does not leave someone watching a spinner.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Why a fetch did not produce a page.
+/// Why a service stream could not be opened.
 ///
 /// Transport failure and refusal are kept distinct so a caller — and especially a test —
 /// can tell "the daemon said no" from "we never reached the daemon". Collapsing the two
 /// would let a network timeout masquerade as a successful authorization check.
 #[derive(Debug, thiserror::Error)]
-pub enum FetchError {
+pub enum ConnectError {
     /// The daemon reached a verdict and refused.
     #[error("the daemon denied this request")]
     Denied,
@@ -43,43 +40,34 @@ pub enum FetchError {
     Transport(#[from] anyhow::Error),
 }
 
-impl From<wire::CodecError> for FetchError {
+impl From<wire::CodecError> for ConnectError {
     fn from(err: wire::CodecError) -> Self {
-        FetchError::Transport(err.into())
+        ConnectError::Transport(err.into())
     }
 }
 
-/// A page fetched from a remote daemon.
-#[derive(Debug, Clone)]
-pub struct FetchedPage {
-    pub status: u16,
-    pub content_type: Option<String>,
-    pub body: Vec<u8>,
+/// The two halves of an authorized service byte stream.
+pub struct ServiceStream {
+    pub send: iroh::endpoint::SendStream,
+    pub recv: iroh::endpoint::RecvStream,
 }
 
-impl FetchedPage {
-    /// The body as text. Used to hand HTML to a sandboxed iframe.
-    pub fn text(&self) -> String {
-        String::from_utf8_lossy(&self.body).into_owned()
-    }
-}
-
-/// A viewer endpoint. In the browser this is ephemeral — a fresh key per tab session — so
-/// a capability issued for it dies with the page.
+/// An ephemeral viewer endpoint. A capability is bound to this key and therefore cannot
+/// be redeemed by another devsite client.
 pub struct ViewerEndpoint {
     endpoint: Endpoint,
-    /// One live connection per daemon, reused across requests.
+    /// One live connection per daemon, reused across service streams.
     ///
     /// Connecting per request does not work: dropping a `Connection` closes it, and the
-    /// endpoint hands the same closed connection back to the next `connect` for that peer,
-    /// which then fails with "closed". Holding it open is also simply what a browsing
-    /// session wants — several pages from one daemon over one relay connection.
+    /// endpoint hands the same closed connection back to the next connection for that peer,
+    /// which then fails with "closed". Holding it open also lets many local connections
+    /// share one authenticated QUIC connection.
     connections: Mutex<HashMap<EndpointId, Connection>>,
 }
 
 impl ViewerEndpoint {
     /// Bind a new endpoint with a freshly generated key and wait until a relay has
-    /// accepted us. Browsers have no direct UDP path, so the relay is the only way out.
+    /// accepted us.
     pub async fn create() -> Result<Self> {
         let endpoint = Endpoint::builder(iroh::endpoint::presets::N0)
             .bind()
@@ -98,39 +86,33 @@ impl ViewerEndpoint {
         self.endpoint.id()
     }
 
-    /// Fetch a page from a daemon, presenting `capability`.
+    /// Close the ephemeral endpoint and every cached daemon connection cleanly.
+    pub async fn close(&self) {
+        self.endpoint.close().await;
+    }
+
+    /// Open one authorized byte stream to a service behind a daemon.
     ///
     /// `daemon` is normally a bare [`EndpointId`]: the daemon publishes its own
-    /// address through iroh's address lookup, and the browser resolves it over
-    /// HTTPS. Nothing has to tell us where it is. Callers that already know an
+    /// address through iroh's address lookup, and the client resolves it. Nothing has to
+    /// tell us where it is. Callers that already know an
     /// address — the tests, which want a relay pinned rather than a lookup — can
     /// pass a fuller [`EndpointAddr`].
     ///
     /// The capability must have been issued for this endpoint's key; the daemon checks
     /// that binding against the connection and will refuse otherwise.
-    pub async fn fetch(
+    pub async fn connect(
         &self,
         daemon: impl Into<EndpointAddr>,
         capability: SignedCapability,
-        path: &str,
-    ) -> Result<FetchedPage, FetchError> {
+    ) -> Result<ServiceStream, ConnectError> {
         let addr = daemon.into();
         let connection = self.connection_to(&addr).await?;
-        match request_page(&connection, capability.clone(), path).await {
-            Err(FetchError::Transport(err)) => {
-                // The cached connection may simply have aged out. Drop it and try once
-                // more on a fresh one before reporting failure.
-                tracing::debug!("retrying on a fresh connection: {err:#}");
-                self.connections.lock().unwrap().remove(&addr.id);
-                let connection = self.connection_to(&addr).await?;
-                request_page(&connection, capability, path).await
-            }
-            other => other,
-        }
+        request_stream(&connection, capability).await
     }
 
     /// A live connection to `daemon`, reusing the cached one when there is one.
-    async fn connection_to(&self, daemon: &EndpointAddr) -> Result<Connection, FetchError> {
+    async fn connection_to(&self, daemon: &EndpointAddr) -> Result<Connection, ConnectError> {
         // Scoped so the guard is released before the await below. An `if let` scrutinee
         // temporary would otherwise live to the end of the whole statement, and the
         // second lock in this function would deadlock against it.
@@ -156,25 +138,19 @@ impl ViewerEndpoint {
     }
 }
 
-async fn request_page(
+async fn request_stream(
     connection: &Connection,
     capability: SignedCapability,
-    path: &str,
-) -> Result<FetchedPage, FetchError> {
+) -> Result<ServiceStream, ConnectError> {
     let (mut send, mut recv) = connection
         .open_bi()
         .await
         .context("opening bidirectional stream")?;
 
-    let request = Request::Http(HttpRequest {
-        capability,
-        method: Method::Get,
-        path: path.to_string(),
-    });
+    let request = Request::Connect(ConnectRequest { capability });
     send.write_all(&wire::encode(&request)?)
         .await
-        .context("writing request frame")?;
-    send.finish().context("finishing request stream")?;
+        .context("writing connect frame")?;
 
     let mut prefix = [0u8; 4];
     recv.read_exact(&mut prefix)
@@ -188,19 +164,11 @@ async fn request_page(
 
     let response = wire::decode::<Response>(&payload).context("decoding response frame")?;
     match response {
-        Response::Http {
-            status,
-            content_type,
-            body,
-        } => Ok(FetchedPage {
-            status,
-            content_type,
-            body,
-        }),
+        Response::Connected => Ok(ServiceStream { send, recv }),
         Response::Error {
             code: ErrorCode::Denied,
             ..
-        } => Err(FetchError::Denied),
-        Response::Error { code, .. } => Err(FetchError::Rejected(code)),
+        } => Err(ConnectError::Denied),
+        Response::Error { code, .. } => Err(ConnectError::Rejected(code)),
     }
 }

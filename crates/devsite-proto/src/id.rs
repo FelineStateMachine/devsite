@@ -134,7 +134,11 @@ mod tests {
     fn postcard_round_trip_is_compact() {
         let id = ResourceId::from_bytes([9u8; 16]);
         let bytes = postcard::to_allocvec(&id).unwrap();
-        assert_eq!(bytes.len(), 16, "ids must not be length-prefixed on the wire");
+        assert_eq!(
+            bytes.len(),
+            16,
+            "ids must not be length-prefixed on the wire"
+        );
         assert_eq!(postcard::from_bytes::<ResourceId>(&bytes).unwrap(), id);
     }
 }

@@ -7,10 +7,6 @@
  * Colours are deliberately absent: every colour on the page comes from a
  * --pico-* variable, which is what makes a user theme a small, checkable list
  * of variable assignments rather than a stylesheet. See docs/profile-template.md.
- *
- * The one literal colour is the white behind the viewer's iframe. A fetched page
- * is not part of the profile — it gets the white a browser tab would have given
- * it, rather than showing a stranger's theme through its own background.
  */
 
 /* Open Sans, vendored. The file is a variable font covering 300–800, but it is
@@ -61,18 +57,17 @@ body > main {
   padding-block: var(--pico-block-spacing-vertical);
 }
 
-/* A group heading labels a list; it is not a heading in a document. Still an
- * h2 — the outline should read public / private / shared — but sized and
- * coloured as the label it is, so the profile name stays the loudest thing. */
-.group > h2 {
-  margin-bottom: calc(var(--pico-typography-spacing-vertical) * 0.5);
-  color: var(--pico-muted-color);
-  font-size: 1rem;
+.brand {
+  display: inline-flex;
+  gap: calc(var(--pico-spacing) * 0.4);
+  align-items: center;
 }
-.entries + .group,
+.brand > svg {
+  flex: none;
+}
+
 .entries + .folder,
-.folder + .folder,
-.folder + .group {
+.folder + .folder {
   margin-top: var(--pico-block-spacing-vertical);
 }
 
@@ -180,33 +175,47 @@ body > main {
 
 /* -- the viewer ------------------------------------------------------------ */
 
-/* Wider than Pico's 700px modal: this one holds a whole web page. */
-#viewer > article {
-  max-width: min(64rem, 100%);
-}
-#viewer-body iframe {
-  display: block;
-  width: 100%;
-  height: min(60vh, 40rem);
-  border: var(--pico-border-width) solid var(--pico-muted-border-color);
-  border-radius: var(--pico-border-radius);
-  background: #fff;
-}
-#viewer .hops {
+.secret-command {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  margin: 0 0 var(--pico-spacing);
-  padding: 0;
+  align-items: stretch;
+  margin-bottom: calc(var(--pico-spacing) * 0.25);
+  overflow: hidden;
+  border: var(--pico-border-width) solid var(--pico-form-element-border-color);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-form-element-background-color);
 }
-#viewer .hops > li {
-  list-style: none;
+.secret-command > code {
+  flex: 1;
+  align-content: center;
+  min-width: 0;
+  padding: var(--pico-form-element-spacing-vertical)
+           var(--pico-form-element-spacing-horizontal);
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-#viewer .hops > li[data-reached='yes'] {
-  color: var(--pico-color);
-}
-#viewer .hops > li[data-reached='now'] {
+.command-executable {
   color: var(--pico-primary);
+  font-weight: 700;
+}
+.command-verb {
+  color: var(--pico-code-color);
+}
+.command-secret {
+  color: var(--pico-muted-color);
+}
+.secret-command > button {
+  flex: none;
+  width: auto;
+  margin: 0;
+  border-radius: 0;
+  white-space: nowrap;
+}
+.secret-copy-status {
+  display: block;
+  min-height: 1lh;
 }
 
 /* Refusals and confirmations. Pico's `ins` and `del` colours, without their
@@ -218,8 +227,52 @@ body > main {
   color: var(--pico-ins-color);
 }
 
-/* The token shown once after sign-in. Long, opaque, and meant to be copied. */
-.token {
-  word-break: break-all;
-  white-space: pre-wrap;
+.dashboard-list {
+  margin: 0;
+  padding: 0;
+}
+.dashboard-list > li {
+  display: flex;
+  gap: var(--pico-spacing);
+  align-items: center;
+  justify-content: space-between;
+  padding-block: calc(var(--pico-spacing) * 0.5);
+  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
+  list-style: none;
+}
+.dashboard-list > li:last-child {
+  border-bottom: 0;
+}
+.dashboard-list > li > div:first-child {
+  display: grid;
+}
+.dashboard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--pico-spacing) * 0.4);
+  justify-content: end;
+}
+.dashboard-actions > button,
+.dashboard-list > li > button {
+  width: auto;
+  margin: 0;
+  padding: calc(var(--pico-form-element-spacing-vertical) * 0.5)
+           calc(var(--pico-form-element-spacing-horizontal) * 0.65);
+}
+
+@media (max-width: 576px) {
+  .secret-command {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .secret-command > button {
+    border-radius: 0;
+  }
+  .dashboard-list > li {
+    align-items: start;
+    flex-direction: column;
+  }
+  .dashboard-actions {
+    justify-content: start;
+  }
 }

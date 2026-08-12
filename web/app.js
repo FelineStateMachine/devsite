@@ -1,10 +1,8 @@
-// dev.site — profile rendering, Shoo sign-in, and opening a local service over Iroh.
+// dev.site — profiles, sharing controls, and TCP service connection instructions.
 //
-// The website reads; `devsite` writes. Links, exposures, sharing and themes are
-// all set from the CLI, so the only thing here that changes server state is
-// claiming a handle — which has to happen in the browser because that is where
-// you finish signing in. Anything else that mutates a profile belongs in the
-// CLI, next to the rest of it.
+// The public profile reads. The signed-in homepage is a deliberately small
+// dashboard for account-bound controls: privacy, share revocation and machine
+// credentials. Creating links and exposures remains in the CLI.
 //
 // The markup this file produces is a contract, not an implementation detail: a
 // profile's theme is a list of --pico-* assignments that only mean anything
@@ -15,11 +13,7 @@ const SHOO = 'https://shoo.dev';
 const $ = (id) => document.getElementById(id);
 const main = $('main');
 
-/** The browser's Iroh endpoint. Created lazily, once per tab session. */
-let endpoint = null;
 let me = null;
-/** Resolved from the versioned wasm bundle at boot. */
-let BrowserEndpoint = null;
 
 // -- utilities -----------------------------------------------------------------
 
@@ -154,12 +148,57 @@ function applyTheme(handle, declarations = []) {
   $('profile-theme').textContent = body
     ? `:root[data-profile="${scope}"] {\n${body}\n}\n`
     : '';
+  requestAnimationFrame(updateLogoContrast);
 }
 
 function clearTheme() {
   delete document.documentElement.dataset.profile;
   delete document.documentElement.dataset.theme;
   $('profile-theme').textContent = '';
+  requestAnimationFrame(updateLogoContrast);
+}
+
+function parseComputedColor(value) {
+  const match = value.match(/^rgba?\(\s*([\d.]+)[, ]+\s*([\d.]+)[, ]+\s*([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
+  if (!match) return null;
+  return {
+    rgb: [Number(match[1]), Number(match[2]), Number(match[3])],
+    alpha: match[4] === undefined ? 1 : Number(match[4]),
+  };
+}
+
+/// Composite the rendered background layers behind the mark. This observes the
+/// color itself rather than a theme label, so custom dark colors work in either mode.
+function logoBackground() {
+  let node = document.querySelector('.brand');
+  let alpha = 0;
+  const premultiplied = [0, 0, 0];
+  while (node instanceof Element) {
+    const layer = parseComputedColor(getComputedStyle(node).backgroundColor);
+    if (layer && layer.alpha > 0) {
+      for (let channel = 0; channel < 3; channel += 1) {
+        premultiplied[channel] += layer.rgb[channel] * layer.alpha * (1 - alpha);
+      }
+      alpha += layer.alpha * (1 - alpha);
+      if (alpha >= 0.999) break;
+    }
+    node = node.parentElement;
+  }
+  return premultiplied.map((channel) => channel + 255 * (1 - alpha));
+}
+
+function updateLogoContrast() {
+  if (!$('dev-logo-ring')) return;
+  const luminance = logoBackground()
+    .map((channel) => channel / 255)
+    .map((channel) => channel <= 0.04045
+      ? channel / 12.92
+      : ((channel + 0.055) / 1.055) ** 2.4)
+    .reduce((sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index], 0);
+  document.documentElement.style.setProperty(
+    '--devsite-logo-ring',
+    luminance < 0.179 ? 'rgb(255,255,255)' : 'rgb(0,0,0)',
+  );
 }
 
 // -- rendering -----------------------------------------------------------------
@@ -199,7 +238,7 @@ function siteRow(item, { onClick, from } = {}) {
 
   if (item.kind === 'link') {
     li.innerHTML =
-      `<a href="${esc(item.url)}" target="_blank" rel="noopener noreferrer">${name}</a>` +
+      `<a href="${esc(item.url)}" target="_blank" rel="ugc nofollow noopener noreferrer">${name}</a>` +
       `<small class="state">${linkHost(item)}</small>`;
     return li;
   }
@@ -235,7 +274,11 @@ function entryList(items, options = {}) {
   const list = document.createElement('ul');
   list.className = 'entries';
   for (const item of items) {
-    list.append(siteRow(item, { ...options, onClick: () => openService(item) }));
+    list.append(siteRow(item, {
+      ...options,
+      from: item.owner_handle,
+      onClick: () => openService(item),
+    }));
   }
   return list;
 }
@@ -268,22 +311,6 @@ function folder(name, items) {
   return details;
 }
 
-/// A titled list. Used only for "shared with me", which really is a different
-/// thing — other people's sites, on your page — rather than a subdivision of
-/// yours.
-function group(title, visibility, rows) {
-  const section = document.createElement('section');
-  section.className = 'group';
-  section.dataset.visibility = visibility;
-  section.innerHTML = `<h2>${esc(title)}</h2>`;
-
-  const list = document.createElement('ul');
-  list.className = 'entries';
-  rows.forEach((row) => list.append(row));
-  section.append(list);
-  return section;
-}
-
 function renderProfile(profile) {
   applyTheme(profile.handle, profile.theme);
   main.innerHTML = '';
@@ -291,7 +318,10 @@ function renderProfile(profile) {
   const article = document.createElement('article');
   article.id = 'profile';
 
-  const total = profile.entries.length;
+  // Accepted shares are ordinary service rows once they reach the profile. Their
+  // owner annotation preserves provenance without making sharing a top-level section.
+  const entries = [...profile.entries, ...profile.shared_with_me];
+  const total = entries.length;
   const heading = document.createElement('hgroup');
   heading.innerHTML = `<h1>@${esc(profile.handle)}</h1>`
     + `<p>${total === 1 ? '1 site' : `${total} sites`}</p>`;
@@ -303,10 +333,10 @@ function renderProfile(profile) {
   // be publishing an implementation detail as a heading. Folders are different —
   // they are the owner's own grouping, and they say so in the owner's words.
   if (total) {
-    const loose = profile.entries.filter((item) => !item.folder);
+    const loose = entries.filter((item) => !item.folder);
     if (loose.length) article.append(entryList(loose));
 
-    for (const [name, items] of foldersOf(profile.entries)) {
+    for (const [name, items] of foldersOf(entries)) {
       article.append(folder(name, items));
     }
   } else {
@@ -315,44 +345,10 @@ function renderProfile(profile) {
     article.append(empty);
   }
 
-  if (profile.shared_with_me.length) {
-    const rows = profile.shared_with_me.map((item) =>
-      siteRow(item, { onClick: () => openService(item), from: item.owner_handle }));
-    article.append(group('Shared with me', 'shared-with-me', rows));
-  }
-
   main.append(article);
 }
 
 // -- opening a service ---------------------------------------------------------
-
-const HOPS = ['this browser', 'iroh relay', 'the daemon', 'the service'];
-
-function paintHops(reached) {
-  $('viewer-hops').innerHTML = HOPS.map((hop, i) => {
-    const state = i < reached ? 'yes' : i === reached ? 'now' : 'no';
-    const arrow = i < HOPS.length - 1 ? ' →' : '';
-    return `<li data-reached="${state}"><small>${hop}${arrow}</small></li>`;
-  }).join('');
-}
-
-/// Put the fetched page on screen, in an iframe built for this one service.
-///
-/// Building it here rather than reusing one from the markup is not tidiness: an
-/// iframe that is `display:none` when its `srcdoc` is first assigned never
-/// renders that document, and no later assignment recovers it. A fresh element
-/// also means each service starts in a brand-new opaque-origin document, and
-/// closing the viewer destroys it rather than blanking it.
-function mountFrame(html) {
-  const frame = document.createElement('iframe');
-  // allow-scripts WITHOUT allow-same-origin: the fetched page gets an opaque
-  // origin, so it can run its own code but cannot reach dev.site's DOM, storage
-  // or cookies.
-  frame.setAttribute('sandbox', 'allow-scripts');
-  frame.title = 'Local service';
-  frame.srcdoc = html;
-  $('viewer-body').replaceChildren(frame);
-}
 
 /// Pico's modal convention: the `open` attribute on the dialog, and a lock class
 /// on the document while it is up.
@@ -368,64 +364,79 @@ function closeViewer() {
   $('viewer-body').replaceChildren();
 }
 
-async function openService(item) {
-  const status = $('viewer-status');
+function maskedSecret(secret) {
+  const prefix = String(secret).match(/^[a-z]+_/)?.[0] || '';
+  return `${prefix}***`;
+}
 
+/// The one presentation for secrets handed to the CLI. Only the prefix and a
+/// mask enter the DOM; the full command stays in this closure for clipboard use.
+function renderSecretCommand(container, verb, secret) {
+  const command = `devsite ${verb} ${secret}`;
+  const group = document.createElement('div');
+  group.className = 'secret-command';
+  group.setAttribute('role', 'group');
+  group.setAttribute('aria-label', `devsite ${verb} command`);
+
+  const code = document.createElement('code');
+  const executable = document.createElement('span');
+  executable.className = 'command-executable';
+  executable.textContent = 'devsite';
+  const action = document.createElement('span');
+  action.className = 'command-verb';
+  action.textContent = verb;
+  const masked = document.createElement('span');
+  masked.className = 'command-secret';
+  masked.textContent = maskedSecret(secret);
+  code.append(executable, ' ', action, ' ', masked);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = 'Copy';
+
+  const status = document.createElement('small');
+  status.className = 'secret-copy-status';
+  status.setAttribute('aria-live', 'polite');
+  button.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(command);
+    status.textContent = 'Copied.';
+  });
+
+  group.append(code, button);
+  container.replaceChildren(group, status);
+}
+
+function renderTicketPrompt(resourceId, container, status) {
+  container.innerHTML = `
+    <p>This is a private TCP service. Mint a short-lived ticket, then connect it to a loopback port with the CLI.</p>
+    <button type="button" class="get-ticket">Get ticket</button>`;
+  status.textContent = '';
+
+  container.querySelector('.get-ticket').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    button.setAttribute('aria-busy', 'true');
+    status.textContent = '';
+    try {
+      const result = await api(`/api/services/${encodeURIComponent(resourceId)}/ticket`, {
+        method: 'POST',
+        body: '{}',
+      });
+      container.innerHTML = `
+        <p>This ticket can be redeemed once and expires shortly.</p>
+        <div class="secret-command-slot"></div>`;
+      renderSecretCommand(container.querySelector('.secret-command-slot'), 'connect', result.ticket);
+    } catch (err) {
+      button.removeAttribute('aria-busy');
+      status.textContent = err.message;
+    }
+  });
+}
+
+function openService(item) {
   $('viewer-title').textContent = item.owner_handle
     ? `${item.name} — @${item.owner_handle}`
     : item.name;
-  $('viewer-body').replaceChildren();
-  status.removeAttribute('aria-invalid');
-  status.setAttribute('aria-busy', 'true');
-  status.textContent = 'Creating a browser endpoint';
-  paintHops(0);
+  renderTicketPrompt(item.resource_id, $('viewer-body'), $('viewer-status'));
   openViewer();
-
-  try {
-    if (!endpoint) endpoint = await BrowserEndpoint.create();
-    paintHops(1);
-
-    status.textContent = 'Requesting a capability';
-    // The capability is bound to this endpoint's key; the daemon checks that binding
-    // against the authenticated peer of the connection.
-    const grant = await api('/api/capability', {
-      method: 'POST',
-      body: JSON.stringify({
-        resource_id: item.resource_id,
-        browser_endpoint_id: endpoint.endpointId,
-      }),
-    });
-
-    paintHops(2);
-    status.textContent = 'Looking up the daemon and connecting';
-    // The daemon is named, not located: `fetchPage` takes an endpoint id and lets
-    // iroh resolve where it currently is. This is also the step that discovers
-    // whether it is running at all, and it gives up after a few seconds.
-    const html = await endpoint.fetchPage(grant.daemon_endpoint_id, grant.capability, '/');
-
-    paintHops(3);
-    mountFrame(html);
-    status.removeAttribute('aria-busy');
-    status.textContent = '';
-  } catch (err) {
-    status.removeAttribute('aria-busy');
-    status.setAttribute('aria-invalid', 'true');
-    status.innerHTML = unreachable(err)
-      ? `<span class="error">Couldn't reach ${esc(item.name)}.</span> ` +
-        `Nothing answered on that machine — is <code>devsite daemon run</code> running?`
-      : `<span class="error">${esc(String(err.message || err))}</span>`;
-  }
-}
-
-/// Whether a failure means "nobody answered" rather than "they said no".
-///
-/// Worth distinguishing in the message: a refusal is a decision the daemon made
-/// and the viewer cannot fix, while silence is nearly always a daemon that is
-/// not running.
-function unreachable(err) {
-  const message = String(err?.message || err);
-  return message.includes('no answer from the daemon')
-    || message.includes('connecting to daemon');
 }
 
 // -- setup views ---------------------------------------------------------------
@@ -441,9 +452,7 @@ function renderSignedOut() {
           and the page you are reading never carries their traffic.
         </p>
       </hgroup>
-      <button id="start">Sign in</button>
     </article>`;
-  $('start').addEventListener('click', startSignIn);
 }
 
 function renderClaimHandle() {
@@ -473,7 +482,7 @@ function renderClaimHandle() {
         method: 'POST',
         body: JSON.stringify({ handle: field.value }),
       });
-      location.assign(`/@${result.handle}`);
+      location.assign('/');
     } catch (err) {
       field.setAttribute('aria-invalid', 'true');
       note.innerHTML = `<span class="error">${esc(err.message)}</span>`;
@@ -481,14 +490,290 @@ function renderClaimHandle() {
   });
 }
 
-/// Shown once, immediately after signing in, and never persisted.
-function renderCliToken(token) {
-  const article = document.createElement('article');
-  article.innerHTML = `
-    <header><strong>Configure this machine</strong></header>
-    <p>Run <code>devsite login</code> and paste:</p>
-    <pre><code class="token">${esc(token)}</code></pre>`;
-  main.append(article);
+function formatTime(seconds) {
+  return seconds ? new Date(seconds * 1000).toLocaleString() : 'never';
+}
+
+function resourceControl(resource) {
+  const item = document.createElement('li');
+  const shares = resource.shares || (resource.shared_with || [])
+    .map((handle) => ({ handle, status: 'accepted' }));
+  item.innerHTML = `
+    <div>
+      <strong>${esc(resource.name)}</strong>
+      <small>${esc(resource.kind)} · ${esc(resource.visibility)}</small>
+    </div>
+    <div class="dashboard-actions"></div>`;
+  const actions = item.querySelector('.dashboard-actions');
+  for (const share of shares) {
+    const button = document.createElement('button');
+    button.className = 'secondary outline revoke-share';
+    button.type = 'button';
+    button.textContent = `Revoke @${share.handle} · ${share.status}`;
+    button.addEventListener('click', async () => {
+      button.setAttribute('aria-busy', 'true');
+      try {
+        await api(`/api/resources/${encodeURIComponent(resource.resource_id)}/shares`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            share_with: shares
+              .filter((value) => value.handle !== share.handle)
+              .map((value) => value.handle),
+          }),
+        });
+        await showDashboard();
+      } catch (err) {
+        button.removeAttribute('aria-busy');
+        button.setAttribute('aria-invalid', 'true');
+        button.title = err.message;
+      }
+    });
+    actions.append(button);
+  }
+  if (!shares.length) actions.innerHTML = '<small>No individual shares</small>';
+  return item;
+}
+
+function incomingShareControl(share) {
+  const item = document.createElement('li');
+  const destination = share.url ? ` · ${share.url}` : '';
+  item.innerHTML = `
+    <div>
+      <strong>${esc(share.name)}</strong>
+      <small>from @${esc(share.owner_handle)} · ${esc(share.kind)}${esc(destination)}</small>
+    </div>
+    <div class="dashboard-actions"></div>`;
+  const actions = item.querySelector('.dashboard-actions');
+
+  if (share.status === 'pending') {
+    const accept = document.createElement('button');
+    accept.type = 'button';
+    accept.textContent = 'Accept';
+    accept.addEventListener('click', async () => {
+      accept.setAttribute('aria-busy', 'true');
+      try {
+        await api(`/api/share-invitations/${encodeURIComponent(share.resource_id)}/accept`, {
+          method: 'POST',
+        });
+        await showDashboard();
+      } catch (err) {
+        accept.removeAttribute('aria-busy');
+        accept.setAttribute('aria-invalid', 'true');
+        accept.title = err.message;
+      }
+    });
+    actions.append(accept);
+  }
+
+  const decline = document.createElement('button');
+  decline.className = 'secondary outline';
+  decline.type = 'button';
+  decline.textContent = share.status === 'pending' ? 'Decline' : 'Remove';
+  decline.addEventListener('click', async () => {
+    decline.setAttribute('aria-busy', 'true');
+    try {
+      await api(`/api/share-invitations/${encodeURIComponent(share.resource_id)}`, {
+        method: 'DELETE',
+      });
+      await showDashboard();
+    } catch (err) {
+      decline.removeAttribute('aria-busy');
+      decline.setAttribute('aria-invalid', 'true');
+      decline.title = err.message;
+    }
+  });
+  actions.append(decline);
+  return item;
+}
+
+function credentialControl(credential) {
+  const item = document.createElement('li');
+  item.innerHTML = `
+    <div>
+      <strong>${esc(credential.name)}</strong>
+      <small>last used ${esc(formatTime(credential.last_used_at))}</small>
+    </div>`;
+  const button = document.createElement('button');
+  button.className = 'secondary outline';
+  button.type = 'button';
+  button.textContent = 'Revoke';
+  button.addEventListener('click', async () => {
+    button.setAttribute('aria-busy', 'true');
+    try {
+      await api(`/api/machine-credentials/${encodeURIComponent(credential.id)}`, {
+        method: 'DELETE',
+      });
+      await showDashboard();
+    } catch (err) {
+      button.removeAttribute('aria-busy');
+      button.setAttribute('aria-invalid', 'true');
+      button.title = err.message;
+    }
+  });
+  item.append(button);
+  return item;
+}
+
+async function signOut(button) {
+  button.setAttribute('aria-busy', 'true');
+  try {
+    await api('/api/auth/session', { method: 'DELETE' });
+  } catch (err) {
+    button.removeAttribute('aria-busy');
+    button.setAttribute('aria-invalid', 'true');
+    button.title = err.message;
+    return;
+  }
+
+  try {
+    if (window.Shoo?.clearIdentity) await window.Shoo.clearIdentity();
+  } catch (err) {
+    // The dev.site session is already gone; a Shoo cleanup failure must not
+    // leave the dashboard looking authenticated.
+    console.warn('Shoo identity cleanup failed', err);
+  }
+  sessionStorage.removeItem('pkce_verifier');
+  sessionStorage.removeItem('pkce_state');
+  sessionStorage.removeItem('return_to');
+  me = null;
+  history.replaceState({}, '', '/');
+  clearTheme();
+  renderSession();
+  renderSignedOut();
+}
+
+async function showDashboard(newCredential = null) {
+  clearTheme();
+  main.setAttribute('aria-busy', 'true');
+  const [resourceListing, incomingListing, credentialListing, settings] = await Promise.all([
+    api('/api/resources'),
+    api('/api/share-invitations'),
+    api('/api/machine-credentials'),
+    api('/api/profile/settings'),
+  ]);
+
+  main.innerHTML = `
+    <hgroup>
+      <h1>@${esc(me.handle)}</h1>
+      <p>Manage what your profile reveals and which machines may change it.</p>
+    </hgroup>
+
+    <article>
+      <header><strong>Profile</strong></header>
+      <p><a href="/@${esc(me.handle)}">View your profile</a></p>
+      <label>
+        <input id="private-only" type="checkbox" role="switch"
+               ${settings.private_only ? 'checked' : ''}>
+        Private-only profile
+      </label>
+      <small>When enabled, only you can open the profile page. Services accepted by other
+      people still appear as ordinary entries on their own profiles.</small>
+      <p id="profile-settings-status"></p>
+    </article>
+
+    <article>
+      <header><strong>Incoming shares</strong></header>
+      <p>Nothing is added to your profile until you accept it. Link destinations are shown
+      as text so you can inspect them without opening them.</p>
+      <ul class="dashboard-list" id="incoming-shares"></ul>
+    </article>
+
+    <article>
+      <header><strong>Shared by you</strong></header>
+      <ul class="dashboard-list" id="dashboard-resources"></ul>
+    </article>
+
+    <article>
+      <header><strong>Machine credentials</strong></header>
+      <p>Each credential remains valid until you revoke it. Its secret is shown once.</p>
+      <form id="credential-form">
+        <fieldset role="group">
+          <input id="credential-name" name="name" maxlength="60"
+                 placeholder="This MacBook" aria-label="Machine name" required>
+          <button type="submit">Create</button>
+        </fieldset>
+        <small id="credential-note"></small>
+      </form>
+      <div id="new-machine-token"></div>
+      <ul class="dashboard-list" id="machine-credentials"></ul>
+    </article>
+
+    <article>
+      <header><strong>Session</strong></header>
+      <button id="logout" type="button" class="secondary outline">Log out</button>
+    </article>`;
+
+  const resources = $('dashboard-resources');
+  if (resourceListing.resources.length) {
+    resourceListing.resources.forEach((resource) => resources.append(resourceControl(resource)));
+  } else {
+    resources.innerHTML = '<li><small>No resources yet. Add one with the CLI.</small></li>';
+  }
+
+  const incoming = $('incoming-shares');
+  if (incomingListing.shares.length) {
+    incomingListing.shares.forEach((share) => incoming.append(incomingShareControl(share)));
+  } else {
+    incoming.innerHTML = '<li><small>No incoming shares.</small></li>';
+  }
+
+  const credentials = $('machine-credentials');
+  if (credentialListing.credentials.length) {
+    credentialListing.credentials.forEach((credential) =>
+      credentials.append(credentialControl(credential)));
+  } else {
+    credentials.innerHTML = '<li><small>No machine credentials yet.</small></li>';
+  }
+
+  if (newCredential) {
+    $('new-machine-token').innerHTML = `
+      <p><strong>${esc(newCredential.name)}</strong> is ready.</p>
+      <div class="secret-command-slot"></div>`;
+    renderSecretCommand(
+      $('new-machine-token').querySelector('.secret-command-slot'),
+      'login',
+      newCredential.token,
+    );
+  }
+
+  $('logout').addEventListener('click', (event) => signOut(event.currentTarget));
+
+  $('private-only').addEventListener('change', async (event) => {
+    const input = event.currentTarget;
+    const status = $('profile-settings-status');
+    input.setAttribute('aria-busy', 'true');
+    try {
+      await api('/api/profile/settings', {
+        method: 'PUT',
+        body: JSON.stringify({ private_only: input.checked }),
+      });
+      status.innerHTML = '<small class="ok">Saved.</small>';
+    } catch (err) {
+      input.checked = !input.checked;
+      status.innerHTML = `<small class="error">${esc(err.message)}</small>`;
+    } finally {
+      input.removeAttribute('aria-busy');
+    }
+  });
+
+  $('credential-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = event.currentTarget.querySelector('button');
+    const note = $('credential-note');
+    button.setAttribute('aria-busy', 'true');
+    try {
+      const created = await api('/api/machine-credentials', {
+        method: 'POST',
+        body: JSON.stringify({ name: $('credential-name').value }),
+      });
+      await showDashboard({ name: created.credential.name, token: created.token });
+    } catch (err) {
+      button.removeAttribute('aria-busy');
+      note.innerHTML = `<span class="error">${esc(err.message)}</span>`;
+    }
+  });
+
+  main.removeAttribute('aria-busy');
 }
 
 // -- routing -------------------------------------------------------------------
@@ -501,14 +786,13 @@ async function route() {
     try {
       const { session, returnTo } = await completeSignIn();
       me = { account_id: session.account_id, handle: session.handle };
-      history.replaceState({}, '', session.handle ? `/@${session.handle}` : '/');
+      history.replaceState({}, '', '/');
       renderSession();
       if (!session.handle) {
         renderClaimHandle();
       } else {
-        await showProfile(session.handle);
+        await showDashboard();
       }
-      renderCliToken(session.token);
       void returnTo;
     } catch (err) {
       main.innerHTML = `
@@ -534,9 +818,30 @@ async function route() {
     return;
   }
 
+  const serviceMatch = path.match(/^\/s\/(res_[a-z2-7]+)$/);
+  if (serviceMatch) {
+    clearTheme();
+    main.innerHTML = `
+      <article>
+        <hgroup>
+          <h1>Private TCP service</h1>
+          <p>Access is checked for each connection.</p>
+        </hgroup>
+        <div id="service-connect"></div>
+        <p id="service-status"></p>
+        <p><small>The CLI opens a loopback port and carries its byte stream through Iroh.</small></p>
+      </article>`;
+    if (me) {
+      renderTicketPrompt(serviceMatch[1], $('service-connect'), $('service-status'));
+    } else {
+      $('service-connect').innerHTML = '<p>Sign in from the header to request access.</p>';
+    }
+    return;
+  }
+
   if (!me) { renderSignedOut(); return; }
   if (!me.handle) { renderClaimHandle(); return; }
-  location.replace(`/@${me.handle}`);
+  await showDashboard();
 }
 
 async function showProfile(handle) {
@@ -554,24 +859,12 @@ async function showProfile(handle) {
   }
 }
 
-// -- boot ----------------------------------------------------------------------
-
-/// Load the wasm bundle named by the manifest.
-///
-/// The bundle lives under a content-hashed path so it can be cached immutably; only this
-/// small manifest is ever revalidated. Without it, a deploy would leave browsers running
-/// the previous bundle from cache.
-async function loadEndpointModule() {
-  const { version } = await (await fetch('/pkg/manifest.json', { cache: 'no-cache' })).json();
-  const module = await import(`/pkg/${version}/devsite_web.js`);
-  await module.default();
-  return module.BrowserEndpoint;
-}
-
 $('viewer-close').addEventListener('click', closeViewer);
 $('viewer').addEventListener('click', (e) => { if (e.target === $('viewer')) closeViewer(); });
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeViewer(); });
 
-BrowserEndpoint = await loadEndpointModule();
+updateLogoContrast();
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () =>
+  requestAnimationFrame(updateLogoContrast));
 main.removeAttribute('aria-busy');
 await route();

@@ -1,18 +1,18 @@
 //! Daemon state: its identity, the control plane it trusts, and the resources it serves.
 //!
 //! The resource map is the security boundary that keeps the daemon from being an open
-//! proxy. A capability names a *resource id*; only this map turns that into an origin, and
+//! proxy. A capability names a *resource id*; only this map turns that into a TCP target, and
 //! it is written exclusively by the local `devsite` CLI.
 
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use devsite_proto::ResourceId;
 use ed25519_dalek::VerifyingKey;
 use iroh::SecretKey;
 use serde::{Deserialize, Serialize};
-use url::Url;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -22,11 +22,12 @@ pub enum Visibility {
     Shared,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExposedResource {
     pub resource_id: ResourceId,
     pub name: String,
-    pub origin: Url,
+    /// Fixed local TCP target. The peer chooses a resource, never an address.
+    pub target: SocketAddr,
     pub visibility: Visibility,
 }
 
@@ -34,9 +35,11 @@ pub struct ExposedResource {
 pub struct DaemonConfig {
     /// Base URL of the control plane, e.g. `https://dev.site`.
     pub server_url: Option<String>,
-    /// Session token from `devsite login`, used for CLI calls and for registering
-    /// this daemon's endpoint id when it starts.
-    pub session_token: Option<String>,
+    /// Revocable machine credential from `devsite login`, used for CLI calls and
+    /// for registering this daemon's endpoint id when it starts. The alias reads
+    /// configs written before machine credentials were introduced.
+    #[serde(default, alias = "session_token")]
+    pub machine_credential: Option<String>,
     /// The control plane's capability-signing public key, pinned at login.
     ///
     /// Hex-encoded. A daemon that has not pinned a key cannot verify anything and refuses
@@ -61,11 +64,11 @@ impl DaemonConfig {
         VerifyingKey::from_bytes(&bytes).context("control plane key is not a valid ed25519 key")
     }
 
-    /// Resource id to origin. Built fresh on each use so a config reload takes effect.
-    pub fn origins(&self) -> HashMap<ResourceId, Url> {
+    /// Resource id to local target. Built fresh on each use so a config reload takes effect.
+    pub fn targets(&self) -> HashMap<ResourceId, SocketAddr> {
         self.resources
             .iter()
-            .map(|r| (r.resource_id, r.origin.clone()))
+            .map(|r| (r.resource_id, r.target))
             .collect()
     }
 }
@@ -122,7 +125,8 @@ impl Paths {
     pub fn load_or_create_identity(&self) -> Result<SecretKey> {
         let path = self.identity();
         if path.exists() {
-            let raw = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+            let raw =
+                std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             let bytes: [u8; 32] = raw
                 .as_slice()
                 .try_into()
@@ -155,51 +159,12 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
             .open(path)
             .with_context(|| format!("opening {}", path.display()))?;
         file.write_all(contents)?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {
-        std::fs::write(path, contents)
-            .with_context(|| format!("writing {}", path.display()))?;
+        std::fs::write(path, contents).with_context(|| format!("writing {}", path.display()))?;
         Ok(())
-    }
-}
-
-/// Reject origins the daemon should never proxy to.
-///
-/// The point of dev.site is reaching services that are *not* publicly routable. Allowing
-/// an arbitrary public origin would turn a daemon into a traffic launderer for its owner's
-/// IP, so exposures are limited to loopback and private/tailnet ranges.
-pub fn validate_origin(origin: &Url) -> Result<()> {
-    match origin.scheme() {
-        "http" | "https" => {}
-        other => bail!("unsupported scheme `{other}` — expected http or https"),
-    }
-    let host = origin.host_str().context("origin has no host")?;
-
-    if host == "localhost" || host.ends_with(".localhost") {
-        return Ok(());
-    }
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        if ip.is_loopback() || is_private(&ip) {
-            return Ok(());
-        }
-        bail!("{host} is a public address; dev.site only exposes local services");
-    }
-    // Tailnet names resolve to CGNAT space and are the documented remote case.
-    if host.ends_with(".ts.net") {
-        return Ok(());
-    }
-    bail!("{host} is not a local or tailnet address")
-}
-
-fn is_private(ip: &std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => {
-            // 100.64.0.0/10 is CGNAT, which is what Tailscale hands out.
-            v4.is_private() || v4.is_link_local() || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
-        }
-        std::net::IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local(),
     }
 }
 
@@ -207,30 +172,12 @@ fn is_private(ip: &std::net::IpAddr) -> bool {
 mod tests {
     use super::*;
 
-    fn url(s: &str) -> Url {
-        Url::parse(s).unwrap()
-    }
-
     #[test]
-    fn accepts_local_origins() {
-        for good in [
-            "http://127.0.0.1:4101",
-            "http://localhost:8080",
-            "http://192.168.1.10:3000",
-            "http://100.101.102.103:80",
-            "https://hermes.tailbe516a.ts.net/chat",
-        ] {
-            validate_origin(&url(good)).unwrap_or_else(|e| panic!("{good} rejected: {e}"));
-        }
-    }
-
-    #[test]
-    fn refuses_to_expose_the_public_internet() {
-        for bad in ["http://93.184.216.34", "https://example.com", "ftp://127.0.0.1"] {
-            assert!(
-                validate_origin(&url(bad)).is_err(),
-                "{bad} should have been rejected"
-            );
-        }
+    fn reads_pre_machine_credential_configs() {
+        let config: DaemonConfig = serde_json::from_str(
+            r#"{"session_token":"old-token","control_plane_key":null,"resources":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(config.machine_credential.as_deref(), Some("old-token"));
     }
 }

@@ -5,7 +5,6 @@
 //! the control plane never touches this traffic.
 
 pub mod config;
-pub mod upstream;
 pub mod verify;
 
 use std::sync::Arc;
@@ -18,9 +17,11 @@ use devsite_proto::ALPN;
 use ed25519_dalek::VerifyingKey;
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, SecretKey};
-use tokio::sync::Mutex;
+use tokio::io::{copy, AsyncWriteExt};
+use tokio::net::TcpStream;
+use tokio::sync::{Mutex, RwLock};
 
-use crate::config::DaemonConfig;
+use crate::config::{DaemonConfig, ExposedResource};
 use crate::verify::{Denied, ReplayGuard};
 
 pub fn now_secs() -> u64 {
@@ -32,8 +33,7 @@ pub fn now_secs() -> u64 {
 
 pub struct Daemon {
     endpoint: Endpoint,
-    http: reqwest::Client,
-    config: DaemonConfig,
+    config: RwLock<DaemonConfig>,
     control_plane_key: VerifyingKey,
     replay: Arc<Mutex<ReplayGuard>>,
 }
@@ -54,15 +54,9 @@ impl Daemon {
             .context("binding daemon endpoint")?;
         endpoint.online().await;
 
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .context("building upstream http client")?;
-
         Ok(Self {
             endpoint,
-            http,
-            config,
+            config: RwLock::new(config),
             control_plane_key,
             replay: Arc::new(Mutex::new(ReplayGuard::default())),
         })
@@ -76,10 +70,30 @@ impl Daemon {
         *self.endpoint.id().as_bytes()
     }
 
+    /// Stop accepting new peers and close the Iroh endpoint cleanly. Service
+    /// managers do not need a platform-specific integration; terminating the
+    /// foreground command is still the whole lifecycle contract.
+    pub async fn close(&self) {
+        self.endpoint.close().await;
+    }
+
+    /// Replace only the resource map while the endpoint keeps its identity and
+    /// open connections. This is intentionally platform-neutral: service
+    /// managers only need to keep `devsite daemon run` alive.
+    pub async fn replace_resources(&self, resources: Vec<ExposedResource>) -> bool {
+        let mut config = self.config.write().await;
+        if config.resources == resources {
+            return false;
+        }
+        config.resources = resources;
+        true
+    }
+
     /// Accept connections until the endpoint closes.
     pub async fn serve(self: Arc<Self>) -> Result<()> {
+        let resources = self.config.read().await.resources.len();
         tracing::info!(
-            resources = self.config.resources.len(),
+            resources,
             "daemon serving; every request must present a valid capability"
         );
 
@@ -103,7 +117,7 @@ impl Daemon {
     /// rather than as anything obviously wrong here.
     async fn handle_connection(self: Arc<Self>, connection: Connection) {
         // The authenticated peer. This is the only identity we trust about the other side,
-        // and the capability's browser binding is checked against it.
+        // and the capability's client binding is checked against it.
         let peer: KeyBytes = *connection.remote_id().as_bytes();
 
         loop {
@@ -140,29 +154,22 @@ impl Daemon {
             .await
             .context("reading request frame")?;
 
-        let response = match wire::decode::<Request>(&payload) {
-            Ok(Request::Http(request)) => self.serve_http(request, peer).await,
+        let request = match wire::decode::<Request>(&payload) {
+            Ok(request) => request,
             Err(err) => {
                 tracing::debug!("malformed frame from {}: {err:#}", hex(peer));
-                Response::Error {
-                    code: ErrorCode::BadRequest,
-                    message: "malformed request".to_string(),
-                }
+                return send_response(
+                    &mut send,
+                    Response::Error {
+                        code: ErrorCode::BadRequest,
+                        message: "malformed request".to_string(),
+                    },
+                )
+                .await;
             }
         };
-
-        send.write_all(&wire::encode(&response)?)
-            .await
-            .context("writing response frame")?;
-        send.finish().context("finishing response stream")?;
-        // Wait for the peer to acknowledge, so the response is not discarded if the
-        // connection is torn down immediately after.
-        send.stopped().await.ok();
-        Ok(())
-    }
-
-    async fn serve_http(&self, request: devsite_proto::HttpRequest, peer: &KeyBytes) -> Response {
-        let origins = self.config.origins();
+        let Request::Connect(request) = request;
+        let targets = self.config.read().await.targets();
         let my_endpoint = self.endpoint_key();
         let now = now_secs();
 
@@ -170,43 +177,87 @@ impl Daemon {
             let mut replay = self.replay.lock().await;
             verify::authorize(
                 &request.capability,
-                request.method,
                 &self.control_plane_key,
                 &my_endpoint,
                 peer,
-                &origins,
+                &targets,
                 &mut replay,
                 now,
             )
         };
 
-        match authorized {
-            Ok(authorized) => {
-                tracing::info!(
-                    viewer = %authorized.claims.viewer,
-                    resource = %authorized.claims.resource,
-                    path = %request.path,
-                    "serving request"
-                );
-                upstream::fetch(&self.http, &authorized.origin, request.method, &request.path).await
-            }
+        let authorized = match authorized {
+            Ok(authorized) => authorized,
             Err(denied) => {
                 // Logged with detail locally, reported to the peer as a bare "denied".
                 tracing::warn!(peer = %hex(peer), reason = ?denied, "denied request");
                 debug_assert!(matches!(
                     denied,
-                    Denied::Capability
-                        | Denied::UnknownResource
-                        | Denied::MethodNotPermitted
-                        | Denied::Replayed
+                    Denied::Capability | Denied::UnknownResource | Denied::Replayed
                 ));
-                Response::Error {
-                    code: ErrorCode::Denied,
-                    message: "denied".to_string(),
-                }
+                return send_response(
+                    &mut send,
+                    Response::Error {
+                        code: ErrorCode::Denied,
+                        message: "denied".to_string(),
+                    },
+                )
+                .await;
             }
-        }
+        };
+
+        let upstream = match TcpStream::connect(authorized.target).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                tracing::warn!(target = %authorized.target, "local service did not accept TCP: {err}");
+                return send_response(
+                    &mut send,
+                    Response::Error {
+                        code: ErrorCode::UpstreamUnavailable,
+                        message: "local service did not accept a connection".to_string(),
+                    },
+                )
+                .await;
+            }
+        };
+
+        tracing::info!(
+            viewer = %authorized.claims.viewer,
+            resource = %authorized.claims.resource,
+            target = %authorized.target,
+            "opened service stream"
+        );
+        send.write_all(&wire::encode(&Response::Connected)?)
+            .await
+            .context("writing connect response")?;
+
+        let (mut upstream_read, mut upstream_write) = upstream.into_split();
+        let client_to_service = async {
+            copy(&mut recv, &mut upstream_write)
+                .await
+                .context("forwarding client bytes")?;
+            upstream_write.shutdown().await.ok();
+            Ok::<_, anyhow::Error>(())
+        };
+        let service_to_client = async {
+            copy(&mut upstream_read, &mut send)
+                .await
+                .context("forwarding service bytes")?;
+            send.finish().context("finishing service stream")?;
+            Ok::<_, anyhow::Error>(())
+        };
+        tokio::try_join!(client_to_service, service_to_client)?;
+        Ok(())
     }
+}
+
+async fn send_response(send: &mut iroh::endpoint::SendStream, response: Response) -> Result<()> {
+    send.write_all(&wire::encode(&response)?)
+        .await
+        .context("writing response frame")?;
+    send.finish().context("finishing response stream")?;
+    send.stopped().await.ok();
+    Ok(())
 }
 
 fn hex(bytes: &KeyBytes) -> String {

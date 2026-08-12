@@ -1,12 +1,12 @@
-//! The authorization matrix, exercised over real Iroh against a real local service.
+//! The authorization matrix, exercised over real Iroh against real local TCP services.
 //!
-//! These run the same `devsite-client` code the browser runs, so what passes here is what
-//! the browser does. Capabilities are minted directly by a test issuer rather than by the
+//! These run the same `devsite-client` code the CLI runs. Capabilities are minted directly
+//! by a test issuer rather than by the
 //! control plane, which keeps the tests focused on what the *daemon* enforces — the
 //! control plane's own "may this viewer have a capability at all" rules are covered by the
 //! policy tests in devsite-server.
 //!
-//! Negative cases assert `FetchError::Denied` specifically, never merely "an error". A
+//! Negative cases assert `ConnectError::Denied` specifically, never merely "an error". A
 //! relay timeout is also an error, and a test that accepted one would report a working
 //! authorization check on a daemon that was simply unreachable.
 //!
@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use devsite_client::{FetchError, ViewerEndpoint};
+use devsite_client::{ConnectError, ServiceStream, ViewerEndpoint};
 use devsite_daemon::config::{DaemonConfig, ExposedResource, Visibility};
 use devsite_daemon::Daemon;
 use devsite_proto::capability::{
@@ -27,31 +27,27 @@ use ed25519_dalek::SigningKey;
 use iroh::{EndpointAddr, RelayUrl, SecretKey};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use url::Url;
 
-const HERMES_BODY: &str = "<h1>Hermes</h1>";
-const AGENT_BODY: &str = "<h1>Agent</h1>";
+const HERMES: &str = "hermes";
+const AGENT: &str = "agent";
 
-async fn spawn_service(body: &'static str) -> Url {
+async fn spawn_service(name: &'static str) -> std::net::SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
+    let target = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else {
                 return;
             };
             tokio::spawn(async move {
-                let mut buf = [0u8; 2048];
-                let _ = stream.read(&mut buf).await;
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
+                let mut buf = Vec::new();
+                let _ = stream.read_to_end(&mut buf).await;
+                let response = format!("{name}:{}", String::from_utf8_lossy(&buf));
                 let _ = stream.write_all(response.as_bytes()).await;
             });
         }
     });
-    Url::parse(&format!("http://127.0.0.1:{port}")).unwrap()
+    target
 }
 
 struct Harness {
@@ -64,7 +60,7 @@ struct Harness {
     unknown: ResourceId,
     /// The legitimate viewer.
     viewer: ViewerEndpoint,
-    /// A second viewer, for anything about one browser using another's grant.
+    /// A second viewer, for anything about one client using another's grant.
     mallory: ViewerEndpoint,
 }
 
@@ -76,7 +72,7 @@ impl Harness {
 
         let config = DaemonConfig {
             server_url: Some("https://dev.site".into()),
-            session_token: Some("test".into()),
+            machine_credential: Some("test".into()),
             control_plane_key: Some(
                 data_encoding::HEXLOWER.encode(signing_key.verifying_key().as_bytes()),
             ),
@@ -84,13 +80,13 @@ impl Harness {
                 ExposedResource {
                     resource_id: hermes,
                     name: "Hermes".into(),
-                    origin: spawn_service(HERMES_BODY).await,
+                    target: spawn_service(HERMES).await,
                     visibility: Visibility::Private,
                 },
                 ExposedResource {
                     resource_id: agent,
                     name: "Agent".into(),
-                    origin: spawn_service(AGENT_BODY).await,
+                    target: spawn_service(AGENT).await,
                     visibility: Visibility::Shared,
                 },
             ],
@@ -133,7 +129,7 @@ impl Harness {
         key: &SigningKey,
         resource: ResourceId,
         audience: KeyBytes,
-        browser_key: KeyBytes,
+        client_key: KeyBytes,
         issued_at: u64,
         expires_at: u64,
     ) -> SignedCapability {
@@ -145,8 +141,8 @@ impl Harness {
                 viewer: AccountId::generate(),
                 resource,
                 audience,
-                browser_key,
-                permission: Permission::HttpRead,
+                client_key,
+                permission: Permission::TcpConnect,
                 issued_at,
                 expires_at,
                 nonce,
@@ -169,37 +165,46 @@ impl Harness {
         )
     }
 
-    async fn fetch_as(
+    async fn connect_as(
         &self,
         who: &ViewerEndpoint,
         capability: SignedCapability,
-        path: &str,
-    ) -> Result<String, FetchError> {
+        input: &str,
+    ) -> Result<String, ConnectError> {
         // The relay is pinned rather than looked up. In the browser a bare
         // endpoint id is enough — the daemon publishes its address and the viewer
         // resolves it — but that path depends on a third-party lookup service,
         // and these tests are about what the daemon enforces, not about how it
         // was found. Handing the address over directly keeps a denial a denial
         // and never a lookup that was slow.
-        let addr = EndpointAddr::from(self.daemon.endpoint().id()).with_relay_url(self.relay.clone());
-        who.fetch(addr, capability, path)
+        let addr =
+            EndpointAddr::from(self.daemon.endpoint().id()).with_relay_url(self.relay.clone());
+        let ServiceStream { mut send, mut recv } = who.connect(addr, capability).await?;
+        send.write_all(input.as_bytes())
             .await
-            .map(|page| page.text())
+            .map_err(|err| ConnectError::Transport(err.into()))?;
+        send.finish()
+            .map_err(|err| ConnectError::Transport(err.into()))?;
+        let output = recv
+            .read_to_end(1024 * 1024)
+            .await
+            .map_err(|err| ConnectError::Transport(err.into()))?;
+        Ok(String::from_utf8_lossy(&output).into_owned())
     }
 
-    async fn fetch(&self, capability: SignedCapability) -> Result<String, FetchError> {
-        self.fetch_as(&self.viewer, capability, "/").await
+    async fn connect(&self, capability: SignedCapability) -> Result<String, ConnectError> {
+        self.connect_as(&self.viewer, capability, "hello").await
     }
 
     /// Assert the daemon reached a verdict and refused, rather than being unreachable.
     async fn assert_denied(&self, capability: SignedCapability, case: &str) {
-        match self.fetch(capability).await {
-            Err(FetchError::Denied) => {}
-            Err(FetchError::Transport(err)) => {
+        match self.connect(capability).await {
+            Err(ConnectError::Denied) => {}
+            Err(ConnectError::Transport(err)) => {
                 panic!("{case}: never reached a verdict — {err:#}")
             }
             Err(other) => panic!("{case}: expected a denial, got {other}"),
-            Ok(body) => panic!("{case}: expected a denial, but the page was served: {body}"),
+            Ok(body) => panic!("{case}: expected a denial, but the service answered: {body}"),
         }
     }
 }
@@ -214,38 +219,36 @@ impl Harness {
 async fn authorization_matrix() {
     let h = Harness::start().await;
 
-    valid_capability_fetches_the_page(&h).await;
+    valid_capability_opens_a_stream(&h).await;
     each_resource_maps_to_its_own_service(&h).await;
-    capability_bound_to_another_browser_is_refused(&h).await;
+    capability_bound_to_another_client_is_refused(&h).await;
     capabilities_that_fail_verification_are_refused(&h).await;
     a_capability_cannot_be_redeemed_twice(&h).await;
     denials_reveal_nothing_about_why(&h).await;
-    the_daemon_cannot_be_turned_into_an_open_proxy(&h).await;
 }
 
-async fn valid_capability_fetches_the_page(h: &Harness) {
-    let page = h
-        .fetch(h.valid(h.hermes))
+async fn valid_capability_opens_a_stream(h: &Harness) {
+    let response = h
+        .connect(h.valid(h.hermes))
         .await
         .expect("a valid capability should be honoured");
-    assert!(page.contains(HERMES_BODY), "got: {page}");
+    assert_eq!(response, "hermes:hello");
 }
 
 async fn each_resource_maps_to_its_own_service(h: &Harness) {
-    // Proves the daemon routes by resource id rather than serving one default origin —
+    // Proves the daemon routes by resource id rather than serving one default target —
     // otherwise "Bob can reach Agent" would quietly also mean "Bob can reach Hermes".
-    let page = h.fetch(h.valid(h.agent)).await.unwrap();
-    assert!(page.contains(AGENT_BODY), "got: {page}");
-    assert!(!page.contains(HERMES_BODY));
+    let response = h.connect(h.valid(h.agent)).await.unwrap();
+    assert_eq!(response, "agent:hello");
 }
 
-async fn capability_bound_to_another_browser_is_refused(h: &Harness) {
+async fn capability_bound_to_another_client_is_refused(h: &Harness) {
     // The core claim: a leaked or forwarded capability is useless without the private key
     // it was bound to. Mallory presents the viewer's capability from her own endpoint.
     let stolen = h.valid(h.agent);
-    match h.fetch_as(&h.mallory, stolen, "/").await {
-        Err(FetchError::Denied) => {}
-        Err(FetchError::Transport(err)) => panic!("never reached a verdict — {err:#}"),
+    match h.connect_as(&h.mallory, stolen, "stolen").await {
+        Err(ConnectError::Denied) => {}
+        Err(ConnectError::Transport(err)) => panic!("never reached a verdict — {err:#}"),
         Err(other) => panic!("expected a denial, got {other}"),
         Ok(body) => panic!("a rebound capability was honoured: {body}"),
     }
@@ -271,25 +274,40 @@ async fn capabilities_that_fail_verification_are_refused(h: &Harness) {
 
     // Expired.
     h.assert_denied(
-        h.mint(&h.signing_key, h.hermes, h.daemon_key, mine, now - 600, now - 300),
+        h.mint(
+            &h.signing_key,
+            h.hermes,
+            h.daemon_key,
+            mine,
+            now - 600,
+            now - 300,
+        ),
         "expired",
     )
     .await;
 
     // Addressed to a different daemon.
     h.assert_denied(
-        h.mint(&h.signing_key, h.hermes, [99; 32], mine, now, now + DEFAULT_LIFETIME_SECS),
+        h.mint(
+            &h.signing_key,
+            h.hermes,
+            [99; 32],
+            mine,
+            now,
+            now + DEFAULT_LIFETIME_SECS,
+        ),
         "wrong audience",
     )
     .await;
 
     // Correctly signed and bound, but names a resource this daemon does not serve.
-    h.assert_denied(h.valid(h.unknown), "unknown resource").await;
+    h.assert_denied(h.valid(h.unknown), "unknown resource")
+        .await;
 }
 
 async fn a_capability_cannot_be_redeemed_twice(h: &Harness) {
     let capability = h.valid(h.hermes);
-    assert!(h.fetch(capability.clone()).await.is_ok());
+    assert!(h.connect(capability.clone()).await.is_ok());
     h.assert_denied(capability, "replayed capability").await;
 }
 
@@ -299,9 +317,9 @@ async fn denials_reveal_nothing_about_why(h: &Harness) {
     let now = h.now();
     let mine = *h.viewer.endpoint_id().as_bytes();
 
-    let unknown = h.fetch(h.valid(h.unknown)).await.unwrap_err();
+    let unknown = h.connect(h.valid(h.unknown)).await.unwrap_err();
     let forged = h
-        .fetch(h.mint(
+        .connect(h.mint(
             &SigningKey::from_bytes(&[7; 32]),
             h.hermes,
             h.daemon_key,
@@ -312,8 +330,8 @@ async fn denials_reveal_nothing_about_why(h: &Harness) {
         .await
         .unwrap_err();
 
-    assert!(matches!(unknown, FetchError::Denied));
-    assert!(matches!(forged, FetchError::Denied));
+    assert!(matches!(unknown, ConnectError::Denied));
+    assert!(matches!(forged, ConnectError::Denied));
     assert_eq!(
         unknown.to_string(),
         forged.to_string(),
@@ -321,31 +339,13 @@ async fn denials_reveal_nothing_about_why(h: &Harness) {
     );
 }
 
-async fn the_daemon_cannot_be_turned_into_an_open_proxy(h: &Harness) {
-    // The peer only ever supplies a path. These are the paths that would escape the
-    // configured origin if they were joined onto it naively.
-    for hostile in [
-        "http://example.com/",
-        "//example.com/",
-        "/../../etc/passwd",
-        "/x\r\nHost: example.com",
-    ] {
-        match h.fetch_as(&h.viewer, h.valid(h.hermes), hostile).await {
-            // A bad path is a client error, distinct from an authorization denial.
-            Err(FetchError::Rejected(_)) => {}
-            Err(FetchError::Transport(err)) => {
-                panic!("{hostile:?}: never reached a verdict — {err:#}")
-            }
-            Err(other) => panic!("{hostile:?}: unexpected {other}"),
-            Ok(body) => panic!("{hostile:?} was proxied: {body}"),
-        }
-    }
-}
-
 #[test]
 fn resource_ids_do_not_collide() {
     let mut seen = std::collections::HashSet::new();
     for _ in 0..10_000 {
-        assert!(seen.insert(ResourceId::generate()), "generated a duplicate id");
+        assert!(
+            seen.insert(ResourceId::generate()),
+            "generated a duplicate id"
+        );
     }
 }

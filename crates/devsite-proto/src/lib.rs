@@ -1,5 +1,5 @@
 //! Types shared by every dev.site component: the CLI, the daemon, the control plane, and
-//! the browser WASM endpoint. No I/O lives here, so it compiles unchanged for wasm32.
+//! native clients. No I/O lives here.
 
 pub mod capability;
 pub mod id;
@@ -7,8 +7,8 @@ pub mod wire;
 
 pub use capability::{CapabilityClaims, CapabilityError, Permission, SignedCapability};
 pub use id::{AccountId, IdParseError, ResourceId};
-pub use wire::{ErrorCode, HttpRequest, Method, Request, Response};
+pub use wire::{ConnectRequest, ErrorCode, Request, Response};
 
-/// ALPN for the dev.site proxy protocol. Bumping the trailing version retires every
-/// previously issued capability shape, since peers negotiate on this string.
-pub const ALPN: &[u8] = b"devsite/http/0";
+/// ALPN for the dev.site stream protocol. Version 1 replaced the early one-document
+/// HTTP fetch with an authorized bidirectional TCP stream.
+pub const ALPN: &[u8] = b"devsite/tcp/1";

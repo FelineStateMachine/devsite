@@ -7,8 +7,7 @@ license.workspace = true
 [dependencies]
 devsite-proto.workspace = true
 iroh = { version = "1", default-features = false, features = ["tls-ring"] }
-# Timers that work natively and in the browser. tokio::time does not exist on
-# wasm32-unknown-unknown, and the connect timeout has to hold on both.
+# Iroh's runtime-neutral timeout keeps connection setup bounded.
 n0-future = "0.3"
 anyhow.workspace = true
 tracing.workspace = true

@@ -1,7 +1,7 @@
 //! Short-lived, signed grants issued by the control plane and verified by a daemon.
 //!
 //! A capability is the only thing that persuades a daemon to talk to a local service. It
-//! is deliberately narrow: one viewer, one resource, one daemon, one browser key, one
+//! is deliberately narrow: one viewer, one resource, one daemon, one client key, one
 //! permission, a few minutes.
 //!
 //! Public keys are carried as raw bytes rather than iroh types so this crate stays free of
@@ -25,8 +25,8 @@ const MAX_CLOCK_SKEW_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Permission {
-    /// GET/HEAD only. The daemon refuses anything that could mutate the local service.
-    HttpRead,
+    /// Open one bidirectional byte stream to the resource's configured TCP target.
+    TcpConnect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -38,10 +38,10 @@ pub struct CapabilityClaims {
     /// The daemon this grant is addressed to. A daemon rejects capabilities minted for a
     /// different audience, so one daemon cannot replay a grant against another.
     pub audience: KeyBytes,
-    /// The browser endpoint key this grant is bound to. The daemon checks it against the
+    /// The client endpoint key this grant is bound to. The daemon checks it against the
     /// authenticated peer of the connection, which is what makes a stolen capability
     /// useless without the matching private key.
-    pub browser_key: KeyBytes,
+    pub client_key: KeyBytes,
     pub permission: Permission,
     pub issued_at: u64,
     pub expires_at: u64,
@@ -74,8 +74,8 @@ pub enum CapabilityError {
     NotYetValid,
     #[error("capability was issued for a different daemon")]
     WrongAudience,
-    #[error("capability is bound to a different browser key")]
-    WrongBrowserKey,
+    #[error("capability is bound to a different client key")]
+    WrongClientKey,
 }
 
 impl SignedCapability {
@@ -91,7 +91,7 @@ impl SignedCapability {
     /// Verify the signature and return the claims.
     ///
     /// This checks only what the signature attests to. Context-dependent checks — audience,
-    /// expiry, browser binding — live in [`Self::verify_for`], which callers should prefer.
+    /// expiry, client binding — live in [`Self::verify_for`], which callers should prefer.
     pub fn verify(&self, key: &VerifyingKey) -> Result<CapabilityClaims, CapabilityError> {
         let signature: [u8; 64] = self
             .signature
@@ -119,10 +119,10 @@ impl SignedCapability {
         if &claims.audience != audience {
             return Err(CapabilityError::WrongAudience);
         }
-        // The check the whole design rests on: the capability names a browser key, and the
+        // The check the whole design rests on: the capability names a client key, and the
         // connection proves possession of one. They must be the same key.
-        if &claims.browser_key != peer {
-            return Err(CapabilityError::WrongBrowserKey);
+        if &claims.client_key != peer {
+            return Err(CapabilityError::WrongClientKey);
         }
         if now > claims.expires_at {
             return Err(CapabilityError::Expired);
@@ -152,14 +152,14 @@ mod tests {
         SigningKey::from_bytes(&[seed; 32])
     }
 
-    fn claims(audience: KeyBytes, browser_key: KeyBytes) -> CapabilityClaims {
+    fn claims(audience: KeyBytes, client_key: KeyBytes) -> CapabilityClaims {
         CapabilityClaims {
             issuer: "https://dev.site".to_string(),
             viewer: AccountId::from_bytes([1; 16]),
             resource: ResourceId::from_bytes([2; 16]),
             audience,
-            browser_key,
-            permission: Permission::HttpRead,
+            client_key,
+            permission: Permission::TcpConnect,
             issued_at: NOW,
             expires_at: NOW + DEFAULT_LIFETIME_SECS,
             nonce: [3; 16],
@@ -173,7 +173,7 @@ mod tests {
         let verified = cap
             .verify_for(&key.verifying_key(), &[7; 32], &[8; 32], NOW + 1)
             .unwrap();
-        assert_eq!(verified.permission, Permission::HttpRead);
+        assert_eq!(verified.permission, Permission::TcpConnect);
     }
 
     #[test]
@@ -198,14 +198,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_use_from_a_different_browser_key() {
+    fn rejects_use_from_a_different_client_key() {
         // Bob hands his capability to someone else, or it leaks from the network. The
         // thief connects with their own endpoint key, and the binding fails.
         let key = signing_key(9);
         let cap = SignedCapability::sign(&claims([7; 32], [8; 32]), &key).unwrap();
         assert_eq!(
             cap.verify_for(&key.verifying_key(), &[7; 32], &[99; 32], NOW),
-            Err(CapabilityError::WrongBrowserKey)
+            Err(CapabilityError::WrongClientKey)
         );
     }
 

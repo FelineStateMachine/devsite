@@ -75,9 +75,7 @@ fly deploy
 ```
 
 Fly builds the image remotely — there is no need for a local Docker daemon. The build runs
-`scripts/build-wasm.sh --release` and `cargo build --release -p devsite-server` inside the
-image, so `web/pkg/` is never uploaded from a laptop and the bundle always matches the
-source that produced the binary.
+`cargo build --release -p devsite-server` and copies the small static site into the image.
 
 A deploy replaces the machine, which means a few seconds where the site is down. That is
 the cost of one volume, and it is the right trade at this size.
@@ -112,15 +110,12 @@ Set in `fly.toml`, except the secret.
 
 Fly terminates TLS for the control plane, so it sees profile metadata and API calls — the
 same position Cloudflare was in before. It never sees private service traffic: that goes
-browser-to-daemon over an iroh relay, end-to-end encrypted, and the control plane is not
+client-to-daemon over an Iroh relay, end-to-end encrypted, and the control plane is not
 even told where the daemon is.
 
 ## Caching
 
-`scripts/build-wasm.sh` publishes the wasm bundle under a content hash (`/pkg/<hash>/…`),
-served `immutable`. The manifest naming the current hash, the HTML, and every `/api/`
-response are `no-cache` or `no-store`. Redeploying therefore invalidates nothing and never
-serves a stale bundle.
+Static files and the HTML shell revalidate; `/api/` responses are `no-store`.
 
 Cloudflare still holds the `dev.site` zone, but only as DNS — the `A` and `AAAA` records
 point straight at Fly, unproxied.

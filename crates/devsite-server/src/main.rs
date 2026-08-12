@@ -21,7 +21,7 @@ use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::api::AppState;
+use crate::api::{AppState, RateLimits};
 use crate::auth::ShooVerifier;
 use crate::db::Db;
 use crate::issuer::Issuer;
@@ -56,7 +56,9 @@ impl Config {
             web_root: std::env::var("DEVSITE_WEB_ROOT")
                 .unwrap_or_else(|_| "web".to_string())
                 .into(),
-            signing_key: std::env::var("DEVSITE_SIGNING_KEY").ok().filter(|k| !k.trim().is_empty()),
+            signing_key: std::env::var("DEVSITE_SIGNING_KEY")
+                .ok()
+                .filter(|k| !k.trim().is_empty()),
         })
     }
 
@@ -91,7 +93,9 @@ async fn main() -> Result<()> {
     // to exercise the stack without a round trip through Google).
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("issue-session") {
-        let handle = args.get(1).context("usage: devsite-server issue-session <handle>")?;
+        let handle = args
+            .get(1)
+            .context("usage: devsite-server issue-session <handle>")?;
         return issue_session(&config, handle);
     }
 
@@ -108,6 +112,7 @@ async fn main() -> Result<()> {
 
     let state = Arc::new(AppState {
         db: Mutex::new(db),
+        rate_limits: Mutex::new(RateLimits::default()),
         issuer,
         shoo,
         public_origin: config.public_origin.clone(),
@@ -139,30 +144,21 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Static assets, with a cache policy that matches how they are versioned.
-///
-/// `/pkg/<hash>/*` is content-addressed by `scripts/build-wasm.sh`, so it can be cached
-/// forever — a new build lands on a new path. Everything else, including the manifest that
-/// names the current hash, must revalidate, or a deploy would leave browsers pinned to the
-/// previous bundle.
+/// Static assets always revalidate. They are small and deployed with the server binary.
 fn static_assets(web_root: &std::path::Path, index: &std::path::Path) -> axum::routing::Router {
     let files = ServeDir::new(web_root).not_found_service(ServeFile::new(index));
 
     axum::routing::Router::new()
         .fallback_service(files)
-        .layer(axum::middleware::from_fn(|req: axum::extract::Request, next: axum::middleware::Next| async move {
-            let path = req.uri().path().to_string();
-            let mut response = next.run(req).await;
-            let policy = if path.starts_with("/pkg/") && !path.ends_with("manifest.json") {
-                "public, max-age=31536000, immutable"
-            } else {
-                "no-cache"
-            };
-            response
-                .headers_mut()
-                .insert(header::CACHE_CONTROL, HeaderValue::from_static(policy));
-            response
-        }))
+        .layer(axum::middleware::from_fn(
+            |req: axum::extract::Request, next: axum::middleware::Next| async move {
+                let mut response = next.run(req).await;
+                response
+                    .headers_mut()
+                    .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+                response
+            },
+        ))
 }
 
 /// Serve the SPA shell for client-side routes.
@@ -174,40 +170,16 @@ fn static_assets(web_root: &std::path::Path, index: &std::path::Path) -> axum::r
 /// `Router::layer` only wraps routes registered before it, so these two sit
 /// between the API's `no-store` layer and the static fallback's own headers, and
 /// inherit neither. A shell with no directives and no validator is one a browser
-/// may cache heuristically — and this shell names the stylesheet and the script
-/// for the build that produced it, so a stale copy pins a visitor to assets that
-/// a later deploy has renamed or deleted. `/` never had the problem; `/@handle`
-/// silently did.
+/// may cache heuristically. `/` never had the problem; client-side routes silently did.
 fn serve_index(path: PathBuf) -> impl Fn() -> std::future::Ready<Response> + Clone {
     move || {
-        let body = std::fs::read_to_string(&path).unwrap_or_else(|_| {
-            "<!doctype html><p>web/index.html is missing.".to_string()
-        });
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|_| "<!doctype html><p>web/index.html is missing.".to_string());
         let mut response = Html(body).into_response();
         response
             .headers_mut()
             .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
         std::future::ready(response)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_spa_shell_is_never_cached_without_revalidating() {
-        let index = std::env::temp_dir().join(format!("devsite-index-{}.html", std::process::id()));
-        std::fs::write(&index, "<!doctype html><title>x</title>").unwrap();
-
-        let response = serve_index(index.clone())().into_inner();
-        assert_eq!(
-            response.headers().get(header::CACHE_CONTROL).unwrap(),
-            "no-cache",
-            "a cached shell pins a browser to assets a later deploy may have removed"
-        );
-
-        std::fs::remove_file(&index).ok();
     }
 }
 
@@ -248,4 +220,24 @@ fn issue_session(config: &Config, handle: &str) -> Result<()> {
 async fn shutdown() {
     let _ = tokio::signal::ctrl_c().await;
     tracing::info!("shutting down");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_spa_shell_is_never_cached_without_revalidating() {
+        let index = std::env::temp_dir().join(format!("devsite-index-{}.html", std::process::id()));
+        std::fs::write(&index, "<!doctype html><title>x</title>").unwrap();
+
+        let response = serve_index(index.clone())().into_inner();
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "no-cache",
+            "a cached shell pins a browser to assets a later deploy may have removed"
+        );
+
+        std::fs::remove_file(&index).ok();
+    }
 }

@@ -4,19 +4,32 @@ mod client;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use devsite_daemon::config::{validate_origin, DaemonConfig, ExposedResource, Paths, Visibility};
+use devsite_client::{ServiceStream, ViewerEndpoint};
+use devsite_daemon::config::{DaemonConfig, ExposedResource, Paths, Visibility};
 use devsite_daemon::Daemon;
+use devsite_proto::SignedCapability;
 use serde::Deserialize;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
-use url::Url;
+use tokio::io::{copy, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 
 use crate::client::ControlPlane;
 
 #[derive(Parser)]
-#[command(name = "devsite", about = "Share public work and reach your local services")]
+#[command(
+    name = "devsite",
+    version,
+    about = "Share public work and reach your local services"
+)]
 struct Cli {
     /// Control plane base URL.
-    #[arg(long, env = "DEVSITE_SERVER", default_value = "https://dev.site", global = true)]
+    #[arg(
+        long,
+        env = "DEVSITE_SERVER",
+        default_value = "https://dev.site",
+        global = true
+    )]
     server: String,
 
     #[command(subcommand)]
@@ -28,7 +41,6 @@ enum Command {
     /// Store a session token from the website and pin the control plane's signing key.
     Login {
         /// Session token shown by the website after signing in.
-        #[arg(long)]
         token: Option<String>,
     },
     /// Profile management.
@@ -39,21 +51,25 @@ enum Command {
     Link(LinkCommand),
     /// Expose a local service.
     Expose {
-        /// Local origin, e.g. http://127.0.0.1:4101
-        origin: Url,
+        /// Local TCP port on 127.0.0.1.
+        port: u16,
+        /// Presentation name. Defaults to `port PORT`.
         #[arg(long)]
-        name: String,
-        #[arg(long, conflicts_with_all = ["private", "share"])]
-        public: bool,
-        #[arg(long, conflicts_with_all = ["public", "share"])]
-        private: bool,
-        /// Share with a specific user, e.g. --share @bob. Repeatable.
+        name: Option<String>,
+        /// Invite a specific user to accept the share, e.g. --share @bob. Repeatable.
         #[arg(long, value_name = "@handle")]
         share: Vec<String>,
-        /// File it under a folder on your profile. Leaving it off takes it out of
-        /// whatever folder it was in.
+        /// Presentation folder. TCP services default to `Services`.
         #[arg(long, value_name = "NAME")]
         folder: Option<String>,
+    },
+    /// Forward a local TCP port to a service you may access.
+    Connect {
+        /// Short-lived connection ticket minted on dev.site.
+        ticket: String,
+        /// Local address to listen on. Port 0 chooses a free port.
+        #[arg(long, default_value = "127.0.0.1:0")]
+        listen: SocketAddr,
     },
     /// Stop exposing a local service and take it off your profile.
     Unexpose {
@@ -137,6 +153,12 @@ struct PubKeyResponse {
 }
 
 #[derive(Deserialize)]
+struct PublicConfig {
+    api_version: u32,
+    minimum_cli_version: String,
+}
+
+#[derive(Deserialize)]
 struct HandleResponse {
     handle: String,
 }
@@ -144,6 +166,20 @@ struct HandleResponse {
 #[derive(Deserialize)]
 struct CreateResourceResponse {
     resource_id: String,
+}
+
+#[derive(Deserialize)]
+struct CapabilityResponse {
+    capability: String,
+    daemon_endpoint_id: String,
+}
+
+#[derive(Deserialize)]
+struct RedeemTicketResponse {
+    session_token: String,
+    resource_id: String,
+    name: String,
+    expires_at: u64,
 }
 
 #[derive(Deserialize)]
@@ -156,7 +192,7 @@ struct Resource {
     resource_id: String,
     name: String,
     kind: String,
-    /// Set for links only; a service's origin never leaves the machine serving it.
+    /// Set for links only; a service's target never leaves the machine serving it.
     url: Option<String>,
 }
 
@@ -178,21 +214,23 @@ async fn main() -> Result<()> {
         Command::Profile(ProfileCommand::Create { handle }) => {
             create_profile(&paths, &cli.server, &handle).await
         }
-        Command::Link(LinkCommand::Add { name, url, public, folder }) => {
-            add_link(&paths, &cli.server, &name, &url, public, folder).await
-        }
+        Command::Link(LinkCommand::Add {
+            name,
+            url,
+            public,
+            folder,
+        }) => add_link(&paths, &cli.server, &name, &url, public, folder).await,
         Command::Link(LinkCommand::Remove { name }) => {
             remove_link(&paths, &cli.server, &name).await
         }
         Command::Unexpose { name } => unexpose(&paths, &cli.server, &name).await,
         Command::Expose {
-            origin,
+            port,
             name,
-            public,
-            private,
             share,
             folder,
-        } => expose(&paths, &cli.server, origin, &name, public, private, share, folder).await,
+        } => expose(&paths, &cli.server, port, name, share, folder).await,
+        Command::Connect { ticket, listen } => connect(&cli.server, &ticket, listen).await,
         Command::Theme(command) => theme(&paths, &cli.server, command).await,
         Command::Status => status(&paths),
         Command::Daemon(DaemonCommand::Run) => run_daemon(&paths, &cli.server).await,
@@ -201,7 +239,7 @@ async fn main() -> Result<()> {
 
 fn load_authenticated(paths: &Paths) -> Result<DaemonConfig> {
     let config = paths.load_config()?;
-    if config.session_token.is_none() {
+    if config.machine_credential.is_none() {
         bail!("not signed in — run `devsite login` first");
     }
     Ok(config)
@@ -211,7 +249,7 @@ async fn login(paths: &Paths, server: &str, token: Option<String>) -> Result<()>
     let token = match token {
         Some(token) => token,
         None => {
-            println!("Sign in at {server} and paste the session token shown there.");
+            println!("Open {server}, create a machine credential, and paste it here.");
             print!("token: ");
             use std::io::Write;
             std::io::stdout().flush()?;
@@ -225,8 +263,15 @@ async fn login(paths: &Paths, server: &str, token: Option<String>) -> Result<()>
     }
 
     let api = ControlPlane::new(server, Some(token.clone()));
-    // Confirm the token works before storing it, so a typo fails here rather than at the
-    // first API call.
+    let server_config: PublicConfig = api.get("/api/config").await?;
+    if server_config.api_version != 2 {
+        bail!(
+            "this CLI speaks API version 2, but the server reports version {}",
+            server_config.api_version
+        );
+    }
+    // Confirm the credential works before storing it, so a typo fails here
+    // rather than at the first API call.
     let me: serde_json::Value = api
         .get("/api/me")
         .await
@@ -235,7 +280,7 @@ async fn login(paths: &Paths, server: &str, token: Option<String>) -> Result<()>
 
     let mut config = paths.load_config()?;
     config.server_url = Some(server.trim_end_matches('/').to_string());
-    config.session_token = Some(token);
+    config.machine_credential = Some(token);
     // Pinned now, and every capability is checked against it from here on.
     config.control_plane_key = Some(pubkey.public_key);
     paths.save_config(&config)?;
@@ -245,13 +290,20 @@ async fn login(paths: &Paths, server: &str, token: Option<String>) -> Result<()>
         .and_then(|h| h.as_str())
         .unwrap_or("(no handle yet)");
     println!("signed in as {handle}");
-    println!("pinned control plane key {}", config.control_plane_key.unwrap());
+    println!(
+        "server requires CLI {} or newer",
+        server_config.minimum_cli_version
+    );
+    println!(
+        "pinned control plane key {}",
+        config.control_plane_key.unwrap()
+    );
     Ok(())
 }
 
 async fn create_profile(paths: &Paths, server: &str, handle: &str) -> Result<()> {
     let config = load_authenticated(paths)?;
-    let api = ControlPlane::new(server, config.session_token.clone());
+    let api = ControlPlane::new(server, config.machine_credential.clone());
     let response: HandleResponse = api
         .post(
             "/api/profile",
@@ -274,7 +326,7 @@ async fn add_link(
         bail!("links are external URLs and are always public; pass --public to confirm");
     }
     let config = load_authenticated(paths)?;
-    let api = ControlPlane::new(server, config.session_token.clone());
+    let api = ControlPlane::new(server, config.machine_credential.clone());
     let _: CreateResourceResponse = api
         .post(
             "/api/resources",
@@ -302,7 +354,7 @@ async fn add_link(
 /// such thing" case is answered with the names that do exist.
 async fn remove_resource(paths: &Paths, server: &str, name: &str, kind: &str) -> Result<Resource> {
     let config = load_authenticated(paths)?;
-    let api = ControlPlane::new(server, config.session_token.clone());
+    let api = ControlPlane::new(server, config.machine_credential.clone());
 
     let listing: ResourceListing = api.get("/api/resources").await?;
     let found = listing
@@ -342,7 +394,7 @@ async fn unexpose(paths: &Paths, server: &str, name: &str) -> Result<()> {
     if config.resources.len() == before {
         println!("  (this machine was not serving it; removed from your profile)");
     } else {
-        println!("  restart `devsite daemon run` to stop serving it");
+        println!("  a running daemon will stop serving it automatically");
     }
     Ok(())
 }
@@ -350,36 +402,34 @@ async fn unexpose(paths: &Paths, server: &str, name: &str) -> Result<()> {
 async fn expose(
     paths: &Paths,
     server: &str,
-    origin: Url,
-    name: &str,
-    public: bool,
-    private: bool,
+    port: u16,
+    name: Option<String>,
     share: Vec<String>,
     folder: Option<String>,
 ) -> Result<()> {
-    // Refuse to proxy to the public internet: dev.site exposes local services, and an
-    // arbitrary upstream would make the daemon a traffic launderer.
-    validate_origin(&origin)?;
-
-    let visibility = match (public, private, share.is_empty()) {
-        (true, false, true) => Visibility::Public,
-        (false, _, true) => Visibility::Private,
-        (false, false, false) => Visibility::Shared,
-        (true, _, false) => bail!("--public and --share are mutually exclusive"),
-        _ => bail!("choose one of --public, --private or --share"),
+    if port == 0 {
+        bail!("port 0 cannot be exposed");
+    }
+    let name = name.unwrap_or_else(|| format!("port {port}"));
+    let folder = Some(folder.unwrap_or_else(|| "Services".to_string()));
+    let target = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    let visibility = if share.is_empty() {
+        Visibility::Private
+    } else {
+        Visibility::Shared
     };
 
     let config = load_authenticated(paths)?;
-    let api = ControlPlane::new(server, config.session_token.clone());
+    let api = ControlPlane::new(server, config.machine_credential.clone());
 
     let response: CreateResourceResponse = api
         .post(
             "/api/resources",
             &serde_json::json!({
-                "name": name,
+                "name": &name,
                 "kind": "service",
                 "visibility": visibility_str(visibility),
-                // Deliberately absent: the local origin never leaves this machine.
+                // Deliberately absent: the local target never leaves this machine.
                 "share_with": share.iter().map(|h| h.trim_start_matches('@')).collect::<Vec<_>>(),
                 "folder": folder,
             }),
@@ -395,21 +445,107 @@ async fn expose(
     config.resources.retain(|r| r.name != name);
     config.resources.push(ExposedResource {
         resource_id,
-        name: name.to_string(),
-        origin: origin.clone(),
+        name: name.clone(),
+        target,
         visibility,
     });
     paths.save_config(&config)?;
 
-    println!("exposed {name} → {origin} ({})", visibility_str(visibility));
+    println!("exposed {name} → {target} ({})", visibility_str(visibility));
     if let Some(folder) = &folder {
         println!("  in {folder}");
     }
     if !share.is_empty() {
-        println!("  shared with {}", share.join(", "));
+        println!("  invited {}", share.join(", "));
     }
-    println!("  resource id {resource_id}");
-    println!("\nrun `devsite daemon run` to serve it.");
+    println!("  {server}/s/{resource_id}");
+    println!("\nrun `devsite daemon run` to serve it; an existing daemon reloads automatically.");
+    Ok(())
+}
+
+async fn connect(server: &str, ticket: &str, listen: SocketAddr) -> Result<()> {
+    if !listen.ip().is_loopback() {
+        bail!("--listen must be a loopback address; refusing to publish the tunnel on the LAN");
+    }
+    let viewer = Arc::new(ViewerEndpoint::create().await?);
+    let bootstrap = ControlPlane::new(server, None);
+    let redeemed: RedeemTicketResponse = bootstrap
+        .post(
+            "/api/tickets/redeem",
+            &serde_json::json!({
+                "ticket": ticket,
+                "client_endpoint_id": viewer.endpoint_id().to_string(),
+            }),
+        )
+        .await
+        .context("redeeming connection ticket")?;
+    let api = Arc::new(ControlPlane::new(server, Some(redeemed.session_token)));
+    let listener = TcpListener::bind(listen)
+        .await
+        .with_context(|| format!("binding local listener {listen}"))?;
+    let bound = listener.local_addr()?;
+
+    println!(
+        "connected to {} ({server}/s/{})",
+        redeemed.name, redeemed.resource_id
+    );
+    println!("  listening on {bound}");
+    println!("  session expires at unix time {}", redeemed.expires_at);
+    println!("  press Ctrl-C to stop");
+
+    loop {
+        let (local, peer) = tokio::select! {
+            accepted = listener.accept() => accepted.context("accepting local connection")?,
+            _ = tokio::signal::ctrl_c() => {
+                println!("\nshutting down");
+                if let Err(err) = api.delete("/api/tunnel/session").await {
+                    tracing::warn!("could not revoke tunnel session during shutdown: {err:#}");
+                }
+                viewer.close().await;
+                return Ok(());
+            }
+        };
+        let api = Arc::clone(&api);
+        let viewer = Arc::clone(&viewer);
+        tokio::spawn(async move {
+            if let Err(err) = forward_connection(&api, &viewer, local).await {
+                tracing::warn!(%peer, "service connection failed: {err:#}");
+            }
+        });
+    }
+}
+
+async fn forward_connection(
+    api: &ControlPlane,
+    viewer: &ViewerEndpoint,
+    local: TcpStream,
+) -> Result<()> {
+    let grant: CapabilityResponse = api
+        .post("/api/tunnel/capability", &serde_json::json!({}))
+        .await?;
+    let raw = data_encoding::BASE64URL_NOPAD
+        .decode(grant.capability.as_bytes())
+        .context("the server returned a malformed capability")?;
+    let capability =
+        SignedCapability::from_bytes(&raw).context("the server returned a malformed capability")?;
+    let daemon: iroh::EndpointId = grant
+        .daemon_endpoint_id
+        .parse()
+        .context("the server returned an invalid daemon endpoint")?;
+    let ServiceStream { mut send, mut recv } = viewer.connect(daemon, capability).await?;
+    let (mut local_read, mut local_write) = local.into_split();
+
+    let local_to_service = async {
+        copy(&mut local_read, &mut send).await?;
+        send.finish().context("finishing service input")?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let service_to_local = async {
+        copy(&mut recv, &mut local_write).await?;
+        local_write.shutdown().await.ok();
+        Ok::<_, anyhow::Error>(())
+    };
+    tokio::try_join!(local_to_service, service_to_local)?;
     Ok(())
 }
 
@@ -426,7 +562,7 @@ async fn theme(paths: &Paths, server: &str, command: ThemeCommand) -> Result<()>
     }
 
     let config = load_authenticated(paths)?;
-    let api = ControlPlane::new(server, config.session_token.clone());
+    let api = ControlPlane::new(server, config.machine_credential.clone());
 
     match command {
         ThemeCommand::Properties => unreachable!("handled above, before authentication"),
@@ -447,12 +583,16 @@ async fn theme(paths: &Paths, server: &str, command: ThemeCommand) -> Result<()>
             // The server is the only validator. Rejections arrive as its own
             // message — "`--pico-primary: wine` — expected a colour, e.g. …" —
             // and are printed as-is rather than re-worded here.
-            let saved: ThemeResponse = api.put("/api/theme", &serde_json::json!({ "css": css })).await?;
+            let saved: ThemeResponse = api
+                .put("/api/theme", &serde_json::json!({ "css": css }))
+                .await?;
             print!("{}", saved.css);
             println!("theme saved");
         }
         ThemeCommand::Clear => {
-            let _: ThemeResponse = api.put("/api/theme", &serde_json::json!({ "css": "" })).await?;
+            let _: ThemeResponse = api
+                .put("/api/theme", &serde_json::json!({ "css": "" }))
+                .await?;
             println!("theme cleared");
         }
     }
@@ -477,7 +617,10 @@ fn status(paths: &Paths) -> Result<()> {
     );
     println!(
         "signing key {}",
-        config.control_plane_key.as_deref().unwrap_or("(not pinned)")
+        config
+            .control_plane_key
+            .as_deref()
+            .unwrap_or("(not pinned)")
     );
 
     if config.resources.is_empty() {
@@ -490,7 +633,7 @@ fn status(paths: &Paths) -> Result<()> {
             "  {:<16} {:<10} {}",
             resource.name,
             visibility_str(resource.visibility),
-            resource.origin
+            resource.target
         );
     }
     Ok(())
@@ -498,8 +641,11 @@ fn status(paths: &Paths) -> Result<()> {
 
 async fn run_daemon(paths: &Paths, server: &str) -> Result<()> {
     let config = load_authenticated(paths)?;
-    let server_url = config.server_url.clone().unwrap_or_else(|| server.to_string());
-    let token = config.session_token.clone();
+    let server_url = config
+        .server_url
+        .clone()
+        .unwrap_or_else(|| server.to_string());
+    let token = config.machine_credential.clone();
 
     let secret_key = paths.load_or_create_identity()?;
     let daemon = Arc::new(Daemon::bind(secret_key, config).await?);
@@ -533,9 +679,41 @@ async fn run_daemon(paths: &Paths, server: &str) -> Result<()> {
     .await
     .context("registering this daemon with the control plane")?;
 
+    let reload_paths = Paths {
+        root: paths.root.clone(),
+    };
     tokio::select! {
         result = Arc::clone(&daemon).serve() => result?,
+        result = reload_config(reload_paths, Arc::clone(&daemon)) => result?,
         _ = tokio::signal::ctrl_c() => println!("\nshutting down"),
     }
+    daemon.close().await;
     Ok(())
+}
+
+async fn reload_config(paths: Paths, daemon: Arc<Daemon>) -> Result<()> {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_error = None;
+    // The initial config was loaded immediately before the daemon started; the
+    // first useful tick is the next one.
+    interval.tick().await;
+    loop {
+        interval.tick().await;
+        match paths.load_config() {
+            Ok(config) => {
+                last_error = None;
+                if daemon.replace_resources(config.resources).await {
+                    println!("reloaded exposed services");
+                }
+            }
+            Err(err) => {
+                let message = format!("{err:#}");
+                if last_error.as_deref() != Some(message.as_str()) {
+                    tracing::warn!("could not reload daemon config: {message}");
+                    last_error = Some(message);
+                }
+            }
+        }
+    }
 }

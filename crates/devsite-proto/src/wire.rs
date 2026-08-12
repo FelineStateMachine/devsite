@@ -1,7 +1,7 @@
 //! Frames exchanged over an Iroh bidirectional stream, and their codec.
 //!
-//! One request frame and one response frame per stream. Frames are `postcard`-encoded and
-//! prefixed with a u32 little-endian length.
+//! A stream begins with one request frame and one response frame. After `Connected`, the
+//! rest of the Iroh stream is the service's uninterpreted byte stream.
 
 use serde::{Deserialize, Serialize};
 
@@ -13,46 +13,20 @@ pub const MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Request {
-    Http(HttpRequest),
+    Connect(ConnectRequest),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HttpRequest {
-    /// The grant authorizing this request. Required, not optional: a daemon must never
+pub struct ConnectRequest {
+    /// The grant authorizing this connection. Required, not optional: a daemon must never
     /// have a code path where an absent capability means "allow".
     pub capability: SignedCapability,
-    pub method: Method,
-    /// Origin-relative path, e.g. `/` or `/chat`. Never an absolute URL — the daemon
-    /// resolves the origin from its own configuration, never from the peer.
-    pub path: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Method {
-    Get,
-    Head,
-}
-
-impl Method {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Method::Get => "GET",
-            Method::Head => "HEAD",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Response {
-    Http {
-        status: u16,
-        content_type: Option<String>,
-        body: Vec<u8>,
-    },
-    Error {
-        code: ErrorCode,
-        message: String,
-    },
+    Connected,
+    Error { code: ErrorCode, message: String },
 }
 
 /// Deliberately coarse. A peer that fails authorization learns only "denied" — never
@@ -63,7 +37,6 @@ pub enum ErrorCode {
     Denied,
     BadRequest,
     UpstreamUnavailable,
-    UpstreamTooLarge,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,8 +89,8 @@ mod tests {
             viewer: AccountId::from_bytes([1; 16]),
             resource: ResourceId::from_bytes([2; 16]),
             audience: [7; 32],
-            browser_key: [8; 32],
-            permission: Permission::HttpRead,
+            client_key: [8; 32],
+            permission: Permission::TcpConnect,
             issued_at: 0,
             expires_at: 300,
             nonce: [3; 16],
@@ -127,19 +100,19 @@ mod tests {
 
     #[test]
     fn frames_round_trip() {
-        let request = Request::Http(HttpRequest {
+        let request = Request::Connect(ConnectRequest {
             capability: sample_capability(),
-            method: Method::Get,
-            path: "/".to_string(),
         });
         let encoded = encode(&request).unwrap();
         let size = frame_len(encoded[..4].try_into().unwrap()).unwrap();
         assert_eq!(size, encoded.len() - 4);
 
         let decoded: Request = decode(&encoded[4..]).unwrap();
-        let Request::Http(http) = decoded;
-        assert_eq!(http.path, "/");
-        assert_eq!(http.method, Method::Get);
+        let Request::Connect(connect) = decoded;
+        assert_eq!(
+            connect.capability.to_bytes(),
+            sample_capability().to_bytes()
+        );
     }
 
     #[test]

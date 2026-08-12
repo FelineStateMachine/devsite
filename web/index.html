@@ -18,7 +18,18 @@
 <header class="container">
   <nav>
     <ul>
-      <li><a href="/" class="contrast"><strong>dev.site</strong></a></li>
+      <li>
+        <a href="/" class="contrast brand">
+          <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true"
+               xmlns="http://www.w3.org/2000/svg">
+            <path d="M16,15,12,7,8,15Zm-1,0L11.5,8"
+                  style="fill:none;stroke:var(--pico-primary);stroke-linecap:round;stroke-linejoin:round;stroke-width:2"></path>
+            <circle id="dev-logo-ring" cx="12" cy="12" r="9"
+                    style="fill:none;stroke:var(--devsite-logo-ring, rgb(0,0,0));stroke-linecap:round;stroke-linejoin:round;stroke-width:2"></circle>
+          </svg>
+          <strong>dev.site</strong>
+        </a>
+      </li>
     </ul>
     <ul id="session"></ul>
   </nav>
@@ -32,8 +43,6 @@
       <button aria-label="Close" rel="prev" id="viewer-close"></button>
       <strong id="viewer-title"></strong>
     </header>
-    <ul class="hops" id="viewer-hops"></ul>
-    <!-- The iframe is built in app.js, once per service, and removed on close. -->
     <div id="viewer-body"></div>
     <p id="viewer-status"></p>
   </article>

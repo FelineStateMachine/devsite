@@ -67,9 +67,8 @@ changes here and changes to the whitelist belong in the same commit.
           <a href="https://klot.ski" target="_blank" rel="noopener noreferrer">klot.ski</a>
           <small class="state"><span class="host"><span>klot.ski&nbsp;</span></span>↗</small>
         </li>
-        <!-- reached through its owner's daemon, so it is a button and opens
-             here. No reachability state: nothing knows whether it is running
-             until you ask it. -->
+        <!-- reached through its owner's daemon, so it is a button that opens
+             connection instructions here. -->
         <li class="entry" data-kind="service" data-visibility="private">
           <button class="outline">Hermes</button>
           <small class="state">private</small>
@@ -82,22 +81,18 @@ changes here and changes to the whitelist belong in the same commit.
         <ul class="entries">…</ul>
       </details>
 
-      <!-- other people's sites, on your own profile only -->
-      <section class="group" data-visibility="shared-with-me">
-        <h2>Shared with me</h2>
-        <ul class="entries">…</ul>
-      </section>
+      <!-- accepted shares use the same rows and folds, with "from @owner" in the name -->
     </article>
   </main>
 
-  <dialog id="viewer">…the service, in a sandboxed iframe…</dialog>
+  <dialog id="viewer">…a Get ticket action, then the devsite connect command…</dialog>
 </body>
 ```
 
 Everything on a profile is a site. `data-kind` says how you get to one — `link`
-is reached at its own address, `service` through its owner's daemon — and that is
-the only difference there is. The page does not sort itself into kinds, because
-which of the two a thing is says nothing about what it is for.
+is reached at its own address, while `service` is a TCP byte stream reached with
+`devsite connect`. The page does not sort itself into kinds, because which of the
+two a thing is says nothing about what it is for.
 
 `data-visibility` is on the row: `public`, `private` or `shared`. It is written
 out in `.state` only where it is not `public`, and a link is always `public` —

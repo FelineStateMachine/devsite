@@ -1,6 +1,6 @@
 //! The one place that decides who may see what.
 //!
-//! Both the profile listing and capability issuance route through [`can_view`]. Keeping it
+//! The profile, ticket, and capability paths all route through [`can_view`]. Keeping it
 //! single means the two can never disagree — a resource hidden from Bob's view of a
 //! profile is also a resource he cannot obtain a capability for.
 

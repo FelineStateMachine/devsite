@@ -151,6 +151,23 @@ pub fn generate_session_token() -> String {
     data_encoding::BASE64URL_NOPAD.encode(&bytes)
 }
 
+/// Long-lived bearer credential for one named machine. The prefix keeps it
+/// recognizable in password managers and logs without weakening its entropy.
+pub fn generate_machine_token() -> String {
+    format!("dsm_{}", generate_session_token())
+}
+
+pub fn generate_machine_credential_id() -> String {
+    let mut bytes = [0u8; 16];
+    getrandom_fill(&mut bytes);
+    format!(
+        "machine_{}",
+        data_encoding::BASE32_NOPAD
+            .encode(&bytes)
+            .to_ascii_lowercase()
+    )
+}
+
 pub fn hash_token(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     data_encoding::HEXLOWER.encode(&digest)
@@ -177,7 +194,14 @@ pub fn validate_handle(handle: &str) -> Result<String> {
     if handle.starts_with('-') || handle.starts_with('_') {
         bail!("handles must start with a letter or digit");
     }
-    Ok(handle.to_ascii_lowercase())
+    let handle = handle.to_ascii_lowercase();
+    // This is deliberately not a profanity filter. These names imply an
+    // official dev.site identity and are the small set worth reserving.
+    const RESERVED: &[&str] = &["admin", "devsite", "security", "support"];
+    if RESERVED.contains(&handle.as_str()) {
+        bail!("that handle is reserved");
+    }
+    Ok(handle)
 }
 
 #[cfg(test)]
@@ -202,8 +226,13 @@ mod tests {
         let b = generate_session_token();
         assert_ne!(a, b);
         assert!(a.len() >= 43);
-        assert_ne!(hash_token(&a), a, "the raw token must never be the stored value");
+        assert_ne!(
+            hash_token(&a),
+            a,
+            "the raw token must never be the stored value"
+        );
         assert_eq!(hash_token(&a), hash_token(&a));
+        assert!(generate_machine_token().starts_with("dsm_"));
     }
 
     #[test]
@@ -214,8 +243,22 @@ mod tests {
 
     #[test]
     fn rejects_handles_that_would_be_trouble_in_a_url_or_shell() {
-        for bad in ["a", "", "has space", "semi;colon", "../etc", "-leading", "slash/es"] {
+        for bad in [
+            "a",
+            "",
+            "has space",
+            "semi;colon",
+            "../etc",
+            "-leading",
+            "slash/es",
+        ] {
             assert!(validate_handle(bad).is_err(), "{bad:?} should be rejected");
+        }
+        for reserved in ["admin", "DevSite", "security", "support"] {
+            assert!(
+                validate_handle(reserved).is_err(),
+                "{reserved:?} should be reserved"
+            );
         }
     }
 }
