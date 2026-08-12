@@ -571,7 +571,7 @@ async fn create_resource(
         .map_err(ApiError::internal)?;
 
     // The share list this request names is the whole share list afterwards.
-    // Re-running `expose --share @carol` means Carol is the invited recipient,
+    // Re-running `service host --share @carol` means Carol is the invited recipient,
     // not Carol plus whoever was named the last time it ran.
     db.set_shares(resource, &viewers)
         .map_err(ApiError::internal)?;
@@ -583,11 +583,8 @@ async fn create_resource(
 
 fn validate_resource_visibility(kind: ResourceKind, visibility: Visibility) -> ApiResult<()> {
     match (kind, visibility) {
-        (ResourceKind::Link, Visibility::Public)
+        (ResourceKind::Link, Visibility::Public | Visibility::Private | Visibility::Shared)
         | (ResourceKind::Service, Visibility::Private | Visibility::Shared) => {}
-        (ResourceKind::Link, _) => {
-            return Err(ApiError::bad_request("external links must be public"))
-        }
         (ResourceKind::Service, Visibility::Public) => {
             return Err(ApiError::bad_request(
                 "TCP services must be private or shared with specific users",
@@ -1386,9 +1383,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn links_are_public_and_tcp_services_are_not() {
+    fn links_support_every_visibility_and_tcp_services_are_not_public() {
         assert!(validate_resource_visibility(ResourceKind::Link, Visibility::Public).is_ok());
-        assert!(validate_resource_visibility(ResourceKind::Link, Visibility::Private).is_err());
+        assert!(validate_resource_visibility(ResourceKind::Link, Visibility::Private).is_ok());
+        assert!(validate_resource_visibility(ResourceKind::Link, Visibility::Shared).is_ok());
         assert!(validate_resource_visibility(ResourceKind::Service, Visibility::Private).is_ok());
         assert!(validate_resource_visibility(ResourceKind::Service, Visibility::Shared).is_ok());
         assert!(validate_resource_visibility(ResourceKind::Service, Visibility::Public).is_err());

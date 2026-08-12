@@ -72,7 +72,7 @@ CREATE TABLE IF NOT EXISTS profiles (
 const MIGRATIONS: &[&str] = &[
     SCHEMA,
     // JSON array of the resource ids a daemon is actually configured to serve, so a
-    // resource can be reported reachable only if its owner's daemon still exposes it.
+    // resource can be reported reachable only if its owner's daemon still hosts it.
     "ALTER TABLE daemons ADD COLUMN serving TEXT NOT NULL DEFAULT '[]';",
     // Presence is gone, and with it the 15-second heartbeat that maintained these
     // three columns. A daemon's endpoint id is derived from its secret key and
@@ -519,7 +519,7 @@ impl Db {
 
     /// Create a resource, or update the one that already has this owner, name and kind.
     ///
-    /// Re-running `devsite expose --name Hermes` is an ordinary thing to do — to change
+    /// Re-running `devsite service host --name Hermes` is an ordinary thing to do — to change
     /// visibility, or to add a share. Inserting each time would leave a duplicate entry on
     /// the profile pointing at a resource id no daemon serves any more. Keeping the id
     /// stable also means capabilities already issued for it stay meaningful.
@@ -626,7 +626,7 @@ impl Db {
 
     /// Set exactly who is invited to a resource, replacing whoever was there.
     ///
-    /// Replacing rather than adding is the whole point. `devsite expose --share
+    /// Replacing rather than adding is the whole point. `devsite service host --share
     /// @carol` reads as "offer this to Carol now", and an accumulating list
     /// would leave everyone previously named still holding access. Existing
     /// decisions are preserved; a routine sync cannot undo a recipient's decline.
@@ -1089,7 +1089,7 @@ mod tests {
 
     #[test]
     fn re_sharing_replaces_the_list_rather_than_adding_to_it() {
-        // The bug this exists to prevent: `expose --share @carol` reading as
+        // The bug this exists to prevent: `service host --share @carol` reading as
         // "and Carol too". A share that can be granted and never revoked is not
         // a share, it is a one-way door.
         let (mut db, alice, bob) = seeded();
@@ -1496,8 +1496,8 @@ mod tests {
     }
 
     #[test]
-    fn re_exposing_a_service_keeps_its_id_and_updates_it() {
-        // `devsite expose --name Hermes` run twice must not leave two Hermes entries on
+    fn rehosting_a_service_keeps_its_id_and_updates_it() {
+        // `devsite service host --name Hermes` run twice must not leave two Hermes entries on
         // the profile, and the id must survive so already-issued capabilities still name
         // the same thing.
         let (mut db, alice, _) = seeded();
@@ -1524,7 +1524,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(first, second, "re-exposing must reuse the resource id");
+        assert_eq!(first, second, "rehosting must reuse the resource id");
         let owned = db.resources_owned_by(alice.id).unwrap();
         assert_eq!(owned.len(), 1, "expected exactly one Hermes, got {owned:?}");
         assert_eq!(

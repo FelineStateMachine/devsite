@@ -1,6 +1,6 @@
 # dev.site
 
-dev.site is a profile for public links and private TCP services. A service stays on the
+dev.site is a profile for links and private TCP services. A service stays on the
 machine that owns it. The machine opens an outbound Iroh connection, and an authorized
 viewer uses the `devsite` CLI to map that service onto a loopback port.
 
@@ -40,25 +40,25 @@ After signing in at <https://dev.site>, create a named machine credential on the
 devsite login dsm_...
 ```
 
-Expose a loopback TCP port. Services default to private:
+Host a loopback TCP port. Services default to private:
 
 ```bash
-devsite expose 3000
-# exposed port 3000 → 127.0.0.1:3000 (private)
+devsite service host 3000
+# hosting port 3000 → 127.0.0.1:3000 (private)
 #   https://dev.site/s/res_...
 ```
 
-Names and folders are presentation. Port exposures enter the `Services` folder unless a
+Names and folders are presentation. Hosted ports enter the `Services` folder unless a
 different folder is named:
 
 ```bash
-devsite expose 5432 --name postgres --folder databases
+devsite service host 5432 --name postgres --folder databases
 ```
 
 Sharing remains per service. A recipient must approve the invitation on their dashboard:
 
 ```bash
-devsite expose 6379 --name redis --folder databases --share @bob
+devsite service host 6379 --name redis --folder databases --share @bob
 ```
 
 A permitted viewer opens the service on dev.site, clicks **Get ticket**, and passes the
@@ -77,17 +77,23 @@ devsite connect dst_... --listen 127.0.0.1:15432
 psql -h 127.0.0.1 -p 15432
 ```
 
-The connector refuses non-loopback listeners. Stop exposing a service with:
+The connector refuses non-loopback listeners. Stop hosting a service with:
 
 ```bash
-devsite unexpose postgres
+devsite service remove postgres
 ```
 
-Public HTTP(S) links remain ordinary profile entries:
+Links default to private, can be shared for recipient approval, or made public:
 
 ```bash
-devsite link add --name klot.ski --url https://klot.ski --public --folder Games
+devsite link set --name runbook --url https://example.com/runbook
+devsite link set --name staging --url https://staging.example.com --share @bob
+devsite link set --name klot.ski --url https://klot.ski --public --folder Games
 ```
+
+Setting an existing link or hosting an existing service prints the visibility, recipient,
+destination, and folder changes before applying the upsert. Changing a shared link's URL
+requires its recipients to approve the new destination again.
 
 ## Daemon
 
@@ -98,20 +104,41 @@ needs to keep that command alive:
 devsite daemon run
 ```
 
+Every command accepts `--json` for automation. Finite commands emit one success or error
+object; `connect` and `daemon run` emit newline-delimited lifecycle events. JSON mode never
+prompts. Command-specific `--help` is available as structured JSON, and failures include a
+recovery suggestion. The complete stdout and exit-code contract is in
+[`docs/json-output.md`](docs/json-output.md).
+
+Homebrew installs can supervise it at login on macOS or Linux:
+
+```bash
+brew services start devsite
+```
+
+Native Linux packages may install `packaging/systemd/devsite.service` as a user unit:
+
+```bash
+systemctl --user enable --now devsite.service
+```
+
 The endpoint identity persists in the devsite config directory. The daemon registers that
 public endpoint id with the control plane once at startup, publishes its address through
 Iroh, and reloads service targets from the local config every two seconds. Adding or
 removing a service does not require restarting it.
 
-`devsite status` prints the config location, pinned signing key, and locally served ports.
+`devsite daemon status` reports whether this config directory has a live daemon. The same
+liveness appears in `devsite status` alongside the config location, pinned signing key, and
+locally served ports. The lock is released by the operating system on exit, so a crash does
+not leave a stale running state.
 
 ## Profiles and folders
 
 A profile is a list of ordinary links and TCP services. Folders are repeated labels on
 entries and exist only to group the UI; they are not authorization containers. Accepted
 shares appear as ordinary rows in those folders with their owner noted, not in a separate
-top-level sharing section. Every service retains its own visibility, invitation state,
-revocation, and capability checks.
+top-level sharing section. Every site retains its own visibility, invitation state, and
+revocation; services additionally enforce access for every tunnel connection.
 
 The signed-in homepage is the dashboard. It manages approved and pending shares, revocable
 machine credentials, the private-only profile setting, and logout. Themes remain a bounded
@@ -163,14 +190,14 @@ either is intentionally disruptive.
 | `crates/devsite-proto` | Opaque ids, signed capabilities, and the TCP stream handshake. |
 | `crates/devsite-client` | Native Iroh viewer endpoint and authorized service streams. |
 | `crates/devsite-daemon` | Capability verification and fixed-target TCP forwarding. |
-| `crates/devsite-cli` | Login, profiles, links, expose/connect, themes, and daemon lifecycle. |
+| `crates/devsite-cli` | Login, links, service hosting/connect, themes, and daemon lifecycle. |
 | `crates/devsite-server` | Axum/SQLite control plane and capability issuance. |
 | `web/` | Semantic HTML, plain JavaScript, Pico CSS, and vendored fonts. |
 
 ## Security boundaries
 
 - A peer supplies only a signed capability. It never supplies the daemon's target address.
-- `devsite expose PORT` always stores `127.0.0.1:PORT`; port zero is rejected.
+- `devsite service host PORT` always stores `127.0.0.1:PORT`; port zero is rejected.
 - `devsite connect` listens only on a loopback address.
 - Browser-minted tickets are short-lived, stored only as hashes, and consumed once. A
   successful redemption becomes a client-key-bound tunnel session kept only in CLI memory.

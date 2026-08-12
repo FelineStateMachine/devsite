@@ -237,9 +237,10 @@ function siteRow(item, { onClick, from } = {}) {
     + (from ? ` <small>from @${esc(from)}</small>` : '');
 
   if (item.kind === 'link') {
+    const note = item.visibility === 'public' ? '' : `${esc(item.visibility)} · `;
     li.innerHTML =
       `<a href="${esc(item.url)}" target="_blank" rel="ugc nofollow noopener noreferrer">${name}</a>` +
-      `<small class="state">${linkHost(item)}</small>`;
+      `<small class="state">${note}${linkHost(item)}</small>`;
     return li;
   }
 

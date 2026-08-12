@@ -1,0 +1,14 @@
+[Unit]
+Description=dev.site local service tunnel
+Documentation=https://dev.site
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/devsite daemon run
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=default.target

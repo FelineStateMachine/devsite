@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use devsite_client::{ConnectError, ServiceStream, ViewerEndpoint};
-use devsite_daemon::config::{DaemonConfig, ExposedResource, Visibility};
+use devsite_daemon::config::{DaemonConfig, HostedService, Visibility};
 use devsite_daemon::Daemon;
 use devsite_proto::capability::{
     CapabilityClaims, KeyBytes, Permission, SignedCapability, DEFAULT_LIFETIME_SECS,
@@ -77,13 +77,13 @@ impl Harness {
                 data_encoding::HEXLOWER.encode(signing_key.verifying_key().as_bytes()),
             ),
             resources: vec![
-                ExposedResource {
+                HostedService {
                     resource_id: hermes,
                     name: "Hermes".into(),
                     target: spawn_service(HERMES).await,
                     visibility: Visibility::Private,
                 },
-                ExposedResource {
+                HostedService {
                     resource_id: agent,
                     name: "Agent".into(),
                     target: spawn_service(AGENT).await,

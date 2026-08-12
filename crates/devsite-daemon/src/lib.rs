@@ -21,7 +21,7 @@ use tokio::io::{copy, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, RwLock};
 
-use crate::config::{DaemonConfig, ExposedResource};
+use crate::config::{DaemonConfig, HostedService};
 use crate::verify::{Denied, ReplayGuard};
 
 pub fn now_secs() -> u64 {
@@ -80,7 +80,7 @@ impl Daemon {
     /// Replace only the resource map while the endpoint keeps its identity and
     /// open connections. This is intentionally platform-neutral: service
     /// managers only need to keep `devsite daemon run` alive.
-    pub async fn replace_resources(&self, resources: Vec<ExposedResource>) -> bool {
+    pub async fn replace_resources(&self, resources: Vec<HostedService>) -> bool {
         let mut config = self.config.write().await;
         if config.resources == resources {
             return false;

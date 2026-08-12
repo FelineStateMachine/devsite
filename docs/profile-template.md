@@ -95,10 +95,10 @@ is reached at its own address, while `service` is a TCP byte stream reached with
 two a thing is says nothing about what it is for.
 
 `data-visibility` is on the row: `public`, `private` or `shared`. It is written
-out in `.state` only where it is not `public`, and a link is always `public` —
-dev.site can hide a URL but cannot stop anyone holding it from opening it, so
-concealment is the only thing "private" could mean there and the word is not
-offered.
+out in `.state` only where it is not `public`. For a link, visibility controls
+who can discover the URL on dev.site; it cannot stop someone who already knows
+the destination from opening or forwarding it. Shared links require recipient
+approval, and changing their destination requires fresh approval.
 
 There is deliberately no reachability state to style: the page does not know
 whether a daemon is running, and says so by saying nothing.
@@ -118,7 +118,7 @@ rather than leaving a gap before the arrow. Where there is no hover to ask with,
 
 ## Folders
 
-A folder is a name on a site, not a thing of its own — `devsite link add --folder
+A folder is a name on a site, not a thing of its own — `devsite link set --folder
 Games` files one, and leaving `--folder` off takes it out again. There is nothing
 to create and nothing to delete, so a profile can never be left holding an empty
 one, and renaming a folder is retagging what is in it.
@@ -189,8 +189,8 @@ you visit cannot use its theme to disguise itself as another part of the site.
 ## Setting one
 
 From the CLI, and only from the CLI. The website is where a profile is read, not
-where it is written — links, exposures, sharing and themes are all set with
-`devsite`, and a theme is no more a browser concern than an exposure is. The one
+where it is written — links, hosted services, sharing and themes are all set with
+`devsite`, and a theme is no more a browser concern than a hosted service is. The one
 exception is claiming a handle, which has to happen in the browser because that
 is where signing in finishes.
 

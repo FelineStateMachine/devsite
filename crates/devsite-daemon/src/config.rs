@@ -5,6 +5,7 @@
 //! it is written exclusively by the local `devsite` CLI.
 
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
@@ -23,7 +24,7 @@ pub enum Visibility {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ExposedResource {
+pub struct HostedService {
     pub resource_id: ResourceId,
     pub name: String,
     /// Fixed local TCP target. The peer chooses a resource, never an address.
@@ -46,7 +47,7 @@ pub struct DaemonConfig {
     /// every request, which is the correct failure direction.
     pub control_plane_key: Option<String>,
     #[serde(default)]
-    pub resources: Vec<ExposedResource>,
+    pub resources: Vec<HostedService>,
 }
 
 impl DaemonConfig {
@@ -78,6 +79,14 @@ pub struct Paths {
     pub root: PathBuf,
 }
 
+/// An exclusive claim that this config directory has one daemon serving it.
+///
+/// The operating system releases the lock when the process exits, including
+/// crashes, so there is no stale PID file to clean up or trust.
+pub struct DaemonLock {
+    _file: File,
+}
+
 impl Paths {
     pub fn discover() -> Result<Self> {
         // DEVSITE_HOME keeps integration tests (and multiple daemons on one machine) from
@@ -100,6 +109,35 @@ impl Paths {
 
     pub fn config(&self) -> PathBuf {
         self.root.join("config.json")
+    }
+
+    pub fn daemon_lock(&self) -> PathBuf {
+        self.root.join("daemon.lock")
+    }
+
+    /// Try to become the daemon for this config directory.
+    ///
+    /// `None` means another process currently owns the lock. Keeping the
+    /// returned guard alive keeps the claim; dropping it releases the claim.
+    pub fn try_daemon_lock(&self) -> Result<Option<DaemonLock>> {
+        std::fs::create_dir_all(&self.root)?;
+        let path = self.daemon_lock();
+        let file = open_lock_file(&path)?;
+        match file.try_lock() {
+            Ok(()) => Ok(Some(DaemonLock { _file: file })),
+            Err(TryLockError::WouldBlock) => Ok(None),
+            Err(TryLockError::Error(err)) => {
+                Err(err).with_context(|| format!("locking {}", path.display()))
+            }
+        }
+    }
+
+    /// Whether a daemon currently owns this config directory.
+    pub fn daemon_running(&self) -> Result<bool> {
+        if !self.daemon_lock().exists() {
+            return Ok(false);
+        }
+        Ok(self.try_daemon_lock()?.is_none())
     }
 
     pub fn load_config(&self) -> Result<DaemonConfig> {
@@ -141,6 +179,31 @@ impl Paths {
     }
 }
 
+#[cfg(unix)]
+fn open_lock_file(path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn open_lock_file(path: &Path) -> Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("opening {}", path.display()))
+}
+
 /// Write a file only the owner can read.
 ///
 /// The mode is set before any bytes land on disk, so the secret is never briefly exposed
@@ -171,6 +234,19 @@ fn write_private(path: &Path, contents: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_paths() -> Paths {
+        let suffix = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
+        Paths {
+            root: std::env::temp_dir().join(format!(
+                "devsite-daemon-lock-{}-{suffix}",
+                std::process::id()
+            )),
+        }
+    }
 
     #[test]
     fn reads_pre_machine_credential_configs() {
@@ -179,5 +255,19 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.machine_credential.as_deref(), Some("old-token"));
+    }
+
+    #[test]
+    fn daemon_lock_reports_only_a_live_holder() {
+        let paths = test_paths();
+        assert!(!paths.daemon_running().unwrap());
+
+        let lock = paths.try_daemon_lock().unwrap().unwrap();
+        assert!(paths.daemon_running().unwrap());
+        assert!(paths.try_daemon_lock().unwrap().is_none());
+
+        drop(lock);
+        assert!(!paths.daemon_running().unwrap());
+        std::fs::remove_dir_all(&paths.root).unwrap();
     }
 }
