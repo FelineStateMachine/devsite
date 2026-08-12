@@ -15,7 +15,7 @@ use devsite_proto::capability::KeyBytes;
 use devsite_proto::{AccountId, ResourceId};
 use serde::{Deserialize, Serialize};
 
-use crate::auth::{self, ShooVerifier};
+use crate::auth::{self, ExternalIdentity};
 use crate::db::{Db, MachineAuthentication, ResourceKind, ShareStatus};
 use crate::issuer::Issuer;
 use crate::policy::{can_view, Visibility};
@@ -25,7 +25,7 @@ pub struct AppState {
     pub db: Mutex<Db>,
     pub rate_limits: Mutex<RateLimits>,
     pub issuer: Issuer,
-    pub shoo: ShooVerifier,
+    pub identity_namespace: String,
     pub public_origin: String,
 }
 
@@ -220,17 +220,6 @@ fn cookie_token(headers: &HeaderMap) -> Option<String> {
 // -- payloads ------------------------------------------------------------------
 
 #[derive(Deserialize)]
-pub struct SignInRequest {
-    pub id_token: String,
-}
-
-#[derive(Serialize)]
-pub struct SignInResponse {
-    pub account_id: String,
-    pub handle: Option<String>,
-}
-
-#[derive(Deserialize)]
 pub struct ClaimHandleRequest {
     pub handle: String,
 }
@@ -358,7 +347,7 @@ pub fn router(state: Shared) -> Router {
     Router::new()
         .route("/api/config", get(config))
         .route("/api/pubkey", get(pubkey))
-        .route("/api/auth/session", post(sign_in).delete(sign_out))
+        .route("/api/auth/session", delete(sign_out))
         .route("/api/me", get(me))
         .route("/api/profile", post(claim_handle))
         .route("/api/resources", post(create_resource).get(list_resources))
@@ -401,7 +390,12 @@ pub fn router(state: Shared) -> Router {
 /// Public configuration the browser needs to start a sign-in.
 async fn config(State(state): State<Shared>) -> impl IntoResponse {
     Json(serde_json::json!({
-        "issuer": auth::ISSUER,
+        // `issuer` stays as a compatibility alias for older clients that displayed it.
+        "issuer": state.identity_namespace,
+        "auth": {
+            "namespace": state.identity_namespace,
+            "start_url": "/auth/start",
+        },
         "public_origin": state.public_origin,
         "redirect_uri": format!("{}/auth/callback", state.public_origin),
         "api_version": 3,
@@ -416,25 +410,27 @@ async fn pubkey(State(state): State<Shared>) -> impl IntoResponse {
     Json(serde_json::json!({ "public_key": state.issuer.public_key_hex() }))
 }
 
-async fn sign_in(
-    State(state): State<Shared>,
-    Json(body): Json<SignInRequest>,
-) -> ApiResult<Response> {
-    let claims = state.shoo.verify(&body.id_token).await.map_err(|err| {
-        tracing::warn!("rejected an id_token: {err:#}");
-        ApiError(StatusCode::UNAUTHORIZED, "invalid sign-in token".into())
-    })?;
+pub(crate) struct EstablishedBrowserSession {
+    pub token: String,
+    pub handle: Option<String>,
+}
 
+/// Application port shared by every login adapter: a verified external identity enters;
+/// an opaque, provider-independent browser session comes out.
+pub(crate) fn establish_browser_session(
+    state: &AppState,
+    identity: ExternalIdentity,
+) -> ApiResult<EstablishedBrowserSession> {
     let now = now_secs();
     let token = auth::generate_session_token();
     let (account_id, handle) = {
         let db = state.db.lock().unwrap();
         let account = db
-            .upsert_account(&claims.sub, now)
+            .upsert_account(&identity.namespace, &identity.subject, now)
             .map_err(ApiError::internal)?;
         (account.id, account.handle)
     };
-    check_rate(&state, account_id, RateClass::Session)?;
+    check_rate(state, account_id, RateClass::Session)?;
     {
         let db = state.db.lock().unwrap();
         db.create_session(
@@ -446,9 +442,13 @@ async fn sign_in(
         db.purge_expired_sessions(now).ok();
     }
 
-    // HttpOnly so page scripts cannot read it; SameSite=Lax so it survives the OAuth
-    // redirect back from Shoo without being sent on cross-site POSTs.
-    let cookie = format!(
+    Ok(EstablishedBrowserSession { token, handle })
+}
+
+pub(crate) fn browser_session_cookie(state: &AppState, token: &str) -> String {
+    // HttpOnly so page scripts cannot read it; SameSite=Lax so it survives an identity
+    // provider redirect without being sent on cross-site POSTs.
+    format!(
         "devsite_session={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
         auth::SESSION_LIFETIME_SECS,
         if state.public_origin.starts_with("https://") {
@@ -456,17 +456,7 @@ async fn sign_in(
         } else {
             ""
         }
-    );
-
-    Ok((
-        StatusCode::OK,
-        [(header::SET_COOKIE, cookie)],
-        Json(SignInResponse {
-            account_id: account_id.to_string(),
-            handle,
-        }),
     )
-        .into_response())
 }
 
 async fn sign_out(State(state): State<Shared>, headers: HeaderMap) -> ApiResult<Response> {

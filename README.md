@@ -190,6 +190,14 @@ export DEVSITE_PUBLIC_ORIGIN=http://127.0.0.1:4000
 cargo run -p devsite-server
 ```
 
+Shoo is the default OIDC login adapter. A fork can use any public OIDC client without
+changing application code by setting `DEVSITE_OIDC_ISSUER`,
+`DEVSITE_OIDC_AUTHORIZATION_ENDPOINT`, `DEVSITE_OIDC_TOKEN_ENDPOINT`,
+`DEVSITE_OIDC_JWKS_URI`, and `DEVSITE_OIDC_CLIENT_ID`. The server owns authorization-code
+exchange, PKCE, and token verification; the browser only enters through `/auth/start`.
+See [Authentication providers](docs/auth-providers.md) for OIDC replacement, identity
+continuity, and implementing a non-OIDC `ExternalIdentity` adapter.
+
 For operator-only setup, mint a local browser session:
 
 ```bash
@@ -216,9 +224,11 @@ The traffic path scales independently because it does not pass through Fly. Iroh
 end-to-end encrypted QUIC directly when possible and through a relay when necessary; the
 control plane only signs authorization metadata.
 
-The two durable identities are `DEVSITE_PUBLIC_ORIGIN`, which Shoo uses when deriving
-accounts, and `DEVSITE_SIGNING_KEY`, whose public half every daemon pins at login. Changing
-either is intentionally disruptive.
+The durable boundaries are the OIDC `(issuer, subject)` identity pairs and
+`DEVSITE_SIGNING_KEY`, whose public half every daemon pins at login. Shoo derives its
+default client id and pairwise subjects from `DEVSITE_PUBLIC_ORIGIN`; changing that origin
+is therefore still intentionally disruptive unless the replacement provider preserves
+the configured issuer, client, and subjects.
 
 ## Crates
 

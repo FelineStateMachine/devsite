@@ -8,6 +8,7 @@ use std::str::FromStr;
 use anyhow::{Context, Result};
 use devsite_proto::{AccountId, ResourceId};
 use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 
 use crate::policy::Visibility;
 
@@ -16,12 +17,20 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS accounts (
     id           TEXT PRIMARY KEY,
-    -- Shoo's pairwise subject. Unique per (user, origin), so it is stable for us but
-    -- cannot be correlated with the same user on another site.
+    -- Compatibility shadow for databases created before identities were namespaced.
+    -- New code resolves identities only through account_identities.
     external_sub TEXT NOT NULL UNIQUE,
     handle       TEXT UNIQUE,
     created_at   INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS account_identities (
+    namespace  TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    PRIMARY KEY (namespace, subject)
+);
+CREATE INDEX IF NOT EXISTS account_identities_account ON account_identities(account_id);
 
 CREATE TABLE IF NOT EXISTS sessions (
     -- Only a hash is stored: a leaked database does not yield usable session tokens.
@@ -138,6 +147,28 @@ const MIGRATIONS: &[&str] = &[
      ALTER TABLE machine_credentials ADD COLUMN enrolled_at INTEGER;
      CREATE UNIQUE INDEX machine_credentials_endpoint
          ON machine_credentials(endpoint_id) WHERE endpoint_id IS NOT NULL;",
+    // External subjects are meaningful only inside their provider namespace. Existing
+    // Shoo subjects retain their accounts; operator-created local identities lose the
+    // old `local:` storage prefix because the namespace now carries that distinction.
+    "CREATE TABLE IF NOT EXISTS account_identities (
+         namespace  TEXT NOT NULL,
+         subject    TEXT NOT NULL,
+         account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+         PRIMARY KEY (namespace, subject)
+     );
+     CREATE INDEX IF NOT EXISTS account_identities_account
+         ON account_identities(account_id);
+     INSERT OR IGNORE INTO account_identities (namespace, subject, account_id)
+     SELECT CASE
+                WHEN external_sub LIKE 'local:%' THEN 'local'
+                ELSE 'https://shoo.dev'
+            END,
+            CASE
+                WHEN external_sub LIKE 'local:%' THEN substr(external_sub, 7)
+                ELSE external_sub
+            END,
+            id
+       FROM accounts;",
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -301,24 +332,44 @@ impl Db {
 
     // -- accounts ---------------------------------------------------------------
 
-    /// Find the account for an external subject, creating one on first sign-in.
-    pub fn upsert_account(&self, external_sub: &str, now: u64) -> Result<Account> {
-        if let Some(account) = self.account_by_external_sub(external_sub)? {
+    /// Find the account for a namespaced external identity, creating one on first sign-in.
+    pub fn upsert_account(&self, namespace: &str, subject: &str, now: u64) -> Result<Account> {
+        anyhow::ensure!(!namespace.is_empty(), "identity namespace cannot be empty");
+        anyhow::ensure!(!subject.is_empty(), "identity subject cannot be empty");
+        anyhow::ensure!(namespace.len() <= 2048, "identity namespace is too large");
+        anyhow::ensure!(subject.len() <= 2048, "identity subject is too large");
+        if let Some(account) = self.account_by_identity(namespace, subject)? {
             return Ok(account);
         }
+
         let id = AccountId::generate();
-        self.conn.execute(
+        // The old column remains so existing SQLite databases do not need a risky table
+        // rebuild. Preserve values an older Shoo-only binary understands; other provider
+        // identities get a collision-resistant compatibility shadow.
+        let shadow = legacy_identity_shadow(namespace, subject);
+        let transaction = self.conn.unchecked_transaction()?;
+        transaction.execute(
             "INSERT INTO accounts (id, external_sub, handle, created_at) VALUES (?1, ?2, NULL, ?3)",
-            params![id.to_string(), external_sub, now as i64],
+            params![id.to_string(), shadow, now as i64],
         )?;
+        transaction.execute(
+            "INSERT INTO account_identities (namespace, subject, account_id)
+             VALUES (?1, ?2, ?3)",
+            params![namespace, subject, id.to_string()],
+        )?;
+        transaction.commit()?;
         Ok(Account { id, handle: None })
     }
 
-    pub fn account_by_external_sub(&self, external_sub: &str) -> Result<Option<Account>> {
+    pub fn account_by_identity(&self, namespace: &str, subject: &str) -> Result<Option<Account>> {
         self.conn
             .query_row(
-                "SELECT id, handle FROM accounts WHERE external_sub = ?1",
-                params![external_sub],
+                "SELECT accounts.id, accounts.handle
+                   FROM account_identities
+                   JOIN accounts ON accounts.id = account_identities.account_id
+                  WHERE account_identities.namespace = ?1
+                    AND account_identities.subject = ?2",
+                params![namespace, subject],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
             )
             .optional()?
@@ -1107,6 +1158,23 @@ impl Db {
     }
 }
 
+fn legacy_identity_shadow(namespace: &str, subject: &str) -> String {
+    match namespace {
+        "https://shoo.dev" => subject.to_string(),
+        "local" => format!("local:{subject}"),
+        _ => {
+            let mut digest = Sha256::new();
+            digest.update(namespace.as_bytes());
+            digest.update([0]);
+            digest.update(subject.as_bytes());
+            format!(
+                "identity:{}",
+                data_encoding::HEXLOWER.encode(&digest.finalize())
+            )
+        }
+    }
+}
+
 fn row_to_resource(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Resource>> {
     let id: String = row.get(0)?;
     let owner: String = row.get(1)?;
@@ -1135,8 +1203,8 @@ mod tests {
 
     fn seeded() -> (Db, Account, Account) {
         let db = Db::open_in_memory().unwrap();
-        let alice = db.upsert_account("ps_alice", 0).unwrap();
-        let bob = db.upsert_account("ps_bob", 0).unwrap();
+        let alice = db.upsert_account("test", "ps_alice", 0).unwrap();
+        let bob = db.upsert_account("test", "ps_bob", 0).unwrap();
         db.set_handle(alice.id, "alice").unwrap();
         db.set_handle(bob.id, "bob").unwrap();
         (db, alice, bob)
@@ -1186,12 +1254,64 @@ mod tests {
     #[test]
     fn signing_in_twice_reuses_the_same_account() {
         let db = Db::open_in_memory().unwrap();
-        let first = db.upsert_account("ps_alice", 0).unwrap();
-        let second = db.upsert_account("ps_alice", 100).unwrap();
+        let first = db.upsert_account("test", "ps_alice", 0).unwrap();
+        let second = db.upsert_account("test", "ps_alice", 100).unwrap();
         assert_eq!(
             first.id, second.id,
             "a returning user must not get a new account"
         );
+    }
+
+    #[test]
+    fn the_same_subject_from_different_providers_is_not_the_same_account() {
+        let db = Db::open_in_memory().unwrap();
+        let first = db
+            .upsert_account("https://one.example", "alice", 0)
+            .unwrap();
+        let second = db
+            .upsert_account("https://two.example", "alice", 0)
+            .unwrap();
+        assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn legacy_subjects_are_migrated_into_namespaces() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE accounts (
+                     id TEXT PRIMARY KEY,
+                     external_sub TEXT NOT NULL UNIQUE,
+                     handle TEXT UNIQUE,
+                     created_at INTEGER NOT NULL
+                 );
+                 INSERT INTO accounts VALUES ('account-shoo', 'pairwise-alice', 'alice', 0);
+                 INSERT INTO accounts VALUES ('account-local', 'local:bob', 'bob', 0);",
+            )
+            .unwrap();
+        connection
+            .pragma_update(None, "user_version", (MIGRATIONS.len() - 1) as i64)
+            .unwrap();
+        migrate(&connection).unwrap();
+
+        let shoo: String = connection
+            .query_row(
+                "SELECT account_id FROM account_identities
+                  WHERE namespace = 'https://shoo.dev' AND subject = 'pairwise-alice'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let local: String = connection
+            .query_row(
+                "SELECT account_id FROM account_identities
+                  WHERE namespace = 'local' AND subject = 'bob'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(shoo, "account-shoo");
+        assert_eq!(local, "account-local");
     }
 
     #[test]
@@ -1200,7 +1320,7 @@ mod tests {
         // "and Carol too". A share that can be granted and never revoked is not
         // a share, it is a one-way door.
         let (mut db, alice, bob) = seeded();
-        let carol = db.upsert_account("ps_carol", 0).unwrap();
+        let carol = db.upsert_account("test", "ps_carol", 0).unwrap();
         db.set_handle(carol.id, "carol").unwrap();
 
         let agent = db

@@ -9,7 +9,6 @@
 // against the elements below. Keep it semantic, keep it documented, and change
 // it in step with docs/profile-template.md.
 
-const SHOO = 'https://shoo.dev';
 const $ = (id) => document.getElementById(id);
 const main = $('main');
 const pageFooter = $('page-footer');
@@ -39,81 +38,11 @@ async function api(path, options = {}) {
   return response.status === 204 ? null : response.json();
 }
 
-// -- Shoo sign-in (authorization code + PKCE, run entirely in the browser) ------
+// -- provider-neutral sign-in --------------------------------------------------
 
-const b64url = (bytes) =>
-  btoa(String.fromCharCode(...new Uint8Array(bytes)))
-    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
-function randomVerifier() {
-  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
-  const bytes = crypto.getRandomValues(new Uint8Array(64));
-  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join('');
-}
-
-async function startSignIn() {
-  const verifier = randomVerifier();
-  const state = b64url(crypto.getRandomValues(new Uint8Array(16)));
-  const challenge = b64url(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier)));
-
-  // The verifier never leaves the browser; only its hash goes to Shoo.
-  sessionStorage.setItem('pkce_verifier', verifier);
-  sessionStorage.setItem('pkce_state', state);
-  sessionStorage.setItem('return_to', location.pathname);
-
-  const redirectUri = `${location.origin}/auth/callback`;
-  const url = new URL('/authorize', SHOO);
-  url.searchParams.set('response_type', 'code');
-  // Shoo derives the client id from the redirect origin; sending it explicitly keeps the
-  // value we verify `aud` against and the value Shoo registers identical.
-  url.searchParams.set('client_id', `origin:${location.origin}`);
-  url.searchParams.set('redirect_uri', redirectUri);
-  url.searchParams.set('scope', 'openid');
-  url.searchParams.set('state', state);
-  url.searchParams.set('code_challenge', challenge);
-  url.searchParams.set('code_challenge_method', 'S256');
-  location.assign(url.toString());
-}
-
-async function completeSignIn() {
-  const params = new URLSearchParams(location.search);
-  const code = params.get('code');
-  const state = params.get('state');
-  const verifier = sessionStorage.getItem('pkce_verifier');
-  const expectedState = sessionStorage.getItem('pkce_state');
-  const returnTo = sessionStorage.getItem('return_to') || '/';
-
-  sessionStorage.removeItem('pkce_verifier');
-  sessionStorage.removeItem('pkce_state');
-
-  if (params.get('error')) throw new Error(params.get('error_description') || params.get('error'));
-  if (!code || !verifier) throw new Error('sign-in did not complete');
-  // Guards against an attacker pasting their own authorization code into your session.
-  if (!state || state !== expectedState) throw new Error('sign-in state did not match');
-
-  const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri: `${location.origin}/auth/callback`,
-    client_id: `origin:${location.origin}`,
-    code_verifier: verifier,
-  });
-  const tokenResponse = await fetch(`${SHOO}/token`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body,
-  });
-  if (!tokenResponse.ok) throw new Error(`token exchange failed (${tokenResponse.status})`);
-  const { id_token } = await tokenResponse.json();
-  if (!id_token) throw new Error('no id_token was returned');
-
-  // The control plane verifies this independently against Shoo's JWKS and mints its own
-  // session. Nothing after this point trusts the id_token again.
-  const session = await api('/api/auth/session', {
-    method: 'POST',
-    body: JSON.stringify({ id_token }),
-  });
-  return { session, returnTo };
+function startSignIn() {
+  const returnTo = `${location.pathname}${location.search}`;
+  location.assign(`/auth/start?return_to=${encodeURIComponent(returnTo)}`);
 }
 
 // -- themes --------------------------------------------------------------------
@@ -798,16 +727,6 @@ async function signOut(button) {
     return;
   }
 
-  try {
-    if (window.Shoo?.clearIdentity) await window.Shoo.clearIdentity();
-  } catch (err) {
-    // The dev.site session is already gone; a Shoo cleanup failure must not
-    // leave the dashboard looking authenticated.
-    console.warn('Shoo identity cleanup failed', err);
-  }
-  sessionStorage.removeItem('pkce_verifier');
-  sessionStorage.removeItem('pkce_state');
-  sessionStorage.removeItem('return_to');
   me = null;
   history.replaceState({}, '', '/');
   clearTheme();
@@ -967,30 +886,6 @@ async function showDashboard(newCredential = null) {
 async function route() {
   const path = location.pathname;
   setPageTitle();
-
-  if (path === '/auth/callback') {
-    main.innerHTML = '<article aria-busy="true">Signing you in…</article>';
-    try {
-      const { session, returnTo } = await completeSignIn();
-      me = { account_id: session.account_id, handle: session.handle };
-      history.replaceState({}, '', '/');
-      renderSession();
-      if (!session.handle) {
-        renderClaimHandle();
-      } else {
-        await showDashboard();
-      }
-      void returnTo;
-    } catch (err) {
-      main.innerHTML = `
-        <article>
-          <hgroup><h1>Sign-in failed.</h1><p class="error">${esc(err.message)}</p></hgroup>
-          <button id="retry">Try again</button>
-        </article>`;
-      $('retry').addEventListener('click', startSignIn);
-    }
-    return;
-  }
 
   try {
     me = await api('/api/me');

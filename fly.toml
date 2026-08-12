@@ -16,10 +16,9 @@ primary_region = "sjc"
   dockerfile = "Dockerfile"
 
 [env]
-  # The one irreversible setting. Shoo derives client_id and every user's
-  # pairwise subject from this origin, so changing it after anyone has signed in
-  # orphans their account rather than moving it. It must match the hostname
-  # browsers actually load, certificate and all.
+  # This forms OAuth callbacks and the capability issuer. Shoo also derives its
+  # default client id and pairwise subjects from it, so changing it after anyone
+  # has signed in is disruptive. It must match the hostname browsers load.
   DEVSITE_PUBLIC_ORIGIN = "https://dev.site"
   RUST_LOG = "devsite_server=info,tower_http=warn,warn"
 

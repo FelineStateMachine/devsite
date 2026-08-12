@@ -8,11 +8,13 @@ and nothing here wants a second writer. Since the heartbeat went away the databa
 read-mostly — a few hundred bytes per account, and a handful of writes per user per
 lifetime — so this shape has a lot of room in it.
 
-## The two things that cannot be undone
+## The durable identity boundaries
 
-**`DEVSITE_PUBLIC_ORIGIN`.** Shoo derives `client_id` and every user's pairwise subject
-from it. Changing it after anyone has signed in does not migrate accounts, it orphans them.
-It lives in `fly.toml` and must match the hostname browsers actually load.
+**OIDC issuer and subjects.** Accounts are keyed by the verified `(issuer, subject)` pair.
+Shoo is the default adapter and derives its default `client_id` and pairwise subjects from
+`DEVSITE_PUBLIC_ORIGIN`, so changing that origin after anyone has signed in still orphans
+those identities. Another public OIDC client can be selected with the `DEVSITE_OIDC_*`
+settings below without changing the account or session code.
 
 **The capability signing key.** Every daemon pinned its public half at `devsite login` and
 refuses capabilities signed by anything else. Lose it and every daemon in the world stops
@@ -96,10 +98,19 @@ is the part that cannot be regenerated.
 ## Configuration
 
 Set in `fly.toml`, except the secret.
+See [Authentication providers](../docs/auth-providers.md) for replacing Shoo or implementing a
+non-OIDC adapter.
 
 | Variable | Where | Notes |
 | --- | --- | --- |
 | `DEVSITE_PUBLIC_ORIGIN` | `fly.toml` | `https://dev.site`. See above. |
+| `DEVSITE_OIDC_ISSUER` | optional | Token issuer; defaults to `https://shoo.dev`. |
+| `DEVSITE_OIDC_AUTHORIZATION_ENDPOINT` | optional | Defaults to `<issuer>/authorize`. |
+| `DEVSITE_OIDC_TOKEN_ENDPOINT` | optional | Defaults to `<issuer>/token`. |
+| `DEVSITE_OIDC_JWKS_URI` | optional | Defaults to `<issuer>/.well-known/jwks.json`. |
+| `DEVSITE_OIDC_CLIENT_ID` | optional | Public client id; defaults to `origin:<public origin>`. |
+| `DEVSITE_OIDC_SCOPES` | optional | Space-separated; defaults to `openid` and must include it. |
+| `DEVSITE_OIDC_ALGORITHMS` | optional | Allowed asymmetric JWT algorithms; defaults to Shoo's `ES256`. |
 | `DEVSITE_SIGNING_KEY` | `fly secrets` | Hex. Never in the repository. |
 | `DEVSITE_BIND` | `Dockerfile` | `0.0.0.0:8080`, matching `internal_port`. |
 | `DEVSITE_DB` | `Dockerfile` | `/data/devsite.db`, on the volume. |

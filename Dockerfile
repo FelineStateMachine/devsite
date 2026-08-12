@@ -48,7 +48,7 @@ RUN --mount=type=cache,id=devsite-cargo-registry,target=/usr/local/cargo/registr
 
 FROM debian:bookworm-slim
 
-# TLS roots, for verifying Shoo's JWKS endpoint.
+# TLS roots, for OIDC code exchange and JWKS verification.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*

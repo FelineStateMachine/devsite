@@ -7,6 +7,7 @@ mod api;
 mod auth;
 mod db;
 mod issuer;
+mod oidc;
 mod policy;
 mod theme;
 
@@ -23,14 +24,14 @@ use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::api::{AppState, RateLimits};
-use crate::auth::ShooVerifier;
 use crate::db::Db;
 use crate::issuer::Issuer;
+use crate::oidc::OidcConfig;
 
 struct Config {
     bind: String,
-    /// The exact origin browsers load, e.g. `https://dev.site`. Shoo derives its client id
-    /// and pairwise subjects from this, so changing it changes every account identity.
+    /// The exact origin browsers load, e.g. `https://dev.site`. It forms OAuth callback
+    /// URLs and the capability issuer name, so it must match the externally visible site.
     public_origin: String,
     database: String,
     state_dir: PathBuf,
@@ -102,11 +103,12 @@ async fn main() -> Result<()> {
 
     let db = Db::open(&config.database)?;
     let issuer = config.issuer()?;
-    let shoo = ShooVerifier::new(&config.public_origin);
+    let oidc = OidcConfig::from_env(&config.public_origin)?;
 
     tracing::info!(
         origin = %config.public_origin,
-        audience = %shoo.audience(),
+        identity_namespace = %oidc.issuer(),
+        oidc_client_id = %oidc.client_id(),
         "capability signing key {}",
         issuer.public_key_hex()
     );
@@ -115,22 +117,21 @@ async fn main() -> Result<()> {
         db: Mutex::new(db),
         rate_limits: Mutex::new(RateLimits::default()),
         issuer,
-        shoo,
+        identity_namespace: oidc.issuer().to_string(),
         public_origin: config.public_origin.clone(),
     });
 
     let index = config.web_root.join("index.html");
     let app = api::router(Arc::clone(&state))
+        .merge(oidc::router(Arc::clone(&state), oidc)?)
         // Nothing from the API is ever cacheable: profiles depend on who is asking, and a
         // cached capability would be a reusable grant sitting in a shared cache.
         .layer(SetResponseHeaderLayer::overriding(
             header::CACHE_CONTROL,
             HeaderValue::from_static("no-store, private"),
         ))
-        // `/@handle` and `/auth/callback` are client-side routes; serve the shell and let
-        // the page work out what to render.
+        // `/@handle` is a client-side route; serve the shell and let the page render it.
         .route("/@{handle}", get(serve_index(index.clone())))
-        .route("/auth/callback", get(serve_index(index.clone())))
         .fallback_service(static_assets(&config.web_root, &index))
         // Fly also compresses at its edge today, but the origin should have the same
         // contract when it is run directly or moved behind a different proxy.
@@ -189,9 +190,8 @@ fn serve_index(path: PathBuf) -> impl Fn() -> std::future::Ready<Response> + Clo
 
 /// Mint a session for `handle`, creating the account if it does not exist.
 ///
-/// The account is keyed on a `local:` subject so it can never collide with a Shoo pairwise
-/// subject — signing in through Shoo will always produce a separate account rather than
-/// silently adopting one made here.
+/// New operator-created accounts use the `local` identity namespace, so they cannot collide
+/// with an external provider that happens to issue the same subject.
 fn issue_session(config: &Config, handle: &str) -> Result<()> {
     let db = Db::open(&config.database)?;
     let handle = crate::auth::validate_handle(handle)?;
@@ -199,11 +199,11 @@ fn issue_session(config: &Config, handle: &str) -> Result<()> {
 
     // Attach to the existing account when the handle is taken. Creating a second one would
     // collide on the unique handle, and the useful operator action here is "give me a
-    // session for @alice" — including when @alice signed in through Shoo.
+    // session for @alice" — including when @alice signed in through an external provider.
     let account = match db.account_by_handle(&handle)? {
         Some(existing) => existing,
         None => {
-            let created = db.upsert_account(&format!("local:{handle}"), now)?;
+            let created = db.upsert_account("local", &handle, now)?;
             db.set_handle(created.id, &handle)?;
             created
         }
