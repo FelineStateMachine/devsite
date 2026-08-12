@@ -74,6 +74,16 @@ main:has(.sequence) :is(pre, code, #install-command) {
   user-select: text;
 }
 
+/* Pico spaces paragraphs as standalone blocks. Inside a quote that already has
+ * its own padding, use a smaller gap without adding another trailing margin. */
+main:has(.sequence) blockquote > p {
+  margin-block-end: 0;
+}
+
+main:has(.sequence) blockquote > p + p {
+  margin-block-start: calc(var(--pico-spacing) * 0.5);
+}
+
 /* Dashboard labels and controls are interface, not document copy. Keep the
  * values someone may reasonably copy selectable: form input, commands, link
  * destinations, and errors worth carrying into a bug report. */
