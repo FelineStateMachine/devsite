@@ -1,6 +1,6 @@
 ---
 name: devsite-cli
-description: Operate and explain the devsite command-line interface. Use when a user asks to publish or change a dev.site profile link, share or stop sharing a local TCP service, connect to a service shared with them, request or broker endpoint-bound service access, inspect hosted resources, check devsite setup, manage the foreground daemon, customize profile presentation, or troubleshoot devsite CLI behavior. Also use for intent such as “share localhost,” “expose my local database,” “request database access,” “publish my docs,” or “what can dev.site do?”
+description: Operate and explain the devsite command-line interface. Use when a user asks to publish or change a dev.site profile link, share or stop sharing a local TCP service, connect to a service shared with them, request or grant delegated endpoint-bound service access, inspect hosted resources, check devsite setup, manage the foreground daemon, customize profile presentation, or troubleshoot devsite CLI behavior. Also use for intent such as “share localhost,” “expose my local database,” “request database access,” “publish my docs,” or “what can dev.site do?”
 ---
 
 # devsite CLI
@@ -46,17 +46,17 @@ devsite --json service remove postgres --plan
 | Stop serving a service | Inspect `resources list`, plan `service remove NAME`, explain remote-access and local-mapping effects, then apply after confirmation. |
 | Remove a link | Inspect `resources list`, plan `link remove NAME`, explain access/profile effects, then apply after confirmation. |
 | Reach a shared service | Obtain a user-provided, short-lived single-use connection ticket from the approved profile entry. Run `connect TICKET` and wait for its ready event; use `--listen 127.0.0.1:PORT` only for a deliberate loopback port. |
-| Request sandboxed access | Create a signed request and separate endpoint key with `access request`; send only the request JSON to an authorized broker. Keep the key in the requester sandbox and use it with `access connect` after receiving the grant. |
-| Broker service access | Resolve the signed keyword, plan the exact endpoint-bound grant, obtain the required policy or user approval, then issue it with a machine credential enrolled for `service_grants:issue`. Return only the grant and its server to the requester. |
+| Request sandboxed access | Create a signed request and separate endpoint key with `access request`; send only the request JSON to an authorised granting party. Keep the key in the requester sandbox and use it with `access connect` after receiving the grant. |
+| Grant delegated service access | Resolve the signed keyword, plan the exact endpoint-bound grant, obtain the required policy or user approval, then issue it with a machine credential enrolled for `service_grants:issue`. Return only the grant and its server to the requester. |
 | Enroll this machine | Obtain a user-provided single-use machine ticket and run `login TICKET`. This creates or uses the local endpoint identity and stores a revocable machine credential. |
 | Diagnose availability | Run `doctor`; use its checks and proposed actions. For a configured but stopped host, start `daemon run` under the harness’s normal long-running-process supervision. |
 | Change profile presentation | Discover exact syntax with `theme --json --help`; use `theme properties` before producing a theme declaration file, then `theme set FILE` or `theme clear` as authorized. |
 
 Folders are display grouping, not authorization boundaries. A public profile entry is public; shared entries require the invitee to accept the share. The control plane manages identity and permissions, while service traffic is a peer-to-peer TCP connection to the owner’s local loopback target.
 
-## Broker endpoint-bound access
+## Delegated endpoint-bound access
 
-Use this workflow when a sandboxed or otherwise untrusted worker needs temporary access without receiving the broker machine's identity or credential.
+Use this workflow when a sandboxed or untrusted worker needs temporary access. Do not give it the granting party machine's identity or credential.
 
 Requester:
 
@@ -67,10 +67,10 @@ devsite --json access request postgres \
 ```
 
 - Create both paths in a requester-private directory. The command refuses existing files and writes them with private permissions.
-- Send only `request.json` to the broker. Its signature binds the service keyword, requester endpoint, request id, and expiry. Never send `requester.key`.
+- Send only `request.json` to the granting party. Its signature binds the service keyword, requester endpoint, request id, and expiry. Never send `requester.key`.
 - A request expires within 10 minutes. Issuance consumes its request id once, so retry by creating a new request rather than weakening replay checks.
 
-Broker:
+Granting party:
 
 ```sh
 devsite --json access resolve postgres
@@ -79,10 +79,10 @@ devsite --json access grant --request /inbox/request.json \
   --approved-plan dsp_…
 ```
 
-- Broker commands require a machine credential whose enrollment ticket included the `service_grants:issue` scope. This is explicit delegated authority, not a capability inferred from being logged in.
-- Resolution is limited to services the broker account owns or has an accepted share for. If multiple services match, present the candidates and pass the approved `--resource res_…`; never choose an ambiguous fuzzy match silently.
-- Always plan first. Show the signed request identity, exact service/resource, owner, requester endpoint, and expiry to the user or policy engine that controls issuance. Apply only with that plan's server-signed `approved_plan` token; it pins those fields so a replaced request file or changed target is rejected.
-- Grants last at most 15 minutes and are bound to the requester endpoint. Give the requester only the `dss_…` grant and `server` from the JSON result. Do not give it the broker credential, broker endpoint key, or requester's copied key.
+- Granting party commands require a machine credential with the `service_grants:issue` scope. A login alone does not give that credential authority to grant access.
+- Resolution is limited to services the granting party account owns or has an accepted share for. If multiple services match, present the candidates and pass the approved `--resource res_…`; never choose an ambiguous fuzzy match silently.
+- Always plan first. Show the signed request identity, exact service/resource, owner, requester endpoint, and expiry to the user or policy engine that controls issuance. Apply only with that plan's server-signed `approved_plan` token. It pins these fields so a replaced request file or changed target is rejected.
+- Grants last at most 15 minutes and are bound to the requester endpoint. Give the requester only the `dss_…` grant and `server` from the JSON result. Do not give it the granting party credential, granting party endpoint key, or requester's copied key.
 
 Requester connection:
 
@@ -91,9 +91,9 @@ devsite --server https://dev.site --json access connect dss_… \
   --key /private/requester.key
 ```
 
-`access connect` is resident NDJSON like ordinary `connect`. It proves possession of the requester key, verifies the grant is broker-issued and bound to that endpoint, and then exposes only a loopback listener. A broker credential can be revoked independently; revocation deletes its unredeemed grant sessions, while any already minted one-use transport capability remains bounded by its existing short expiry.
+`access connect` is resident NDJSON like ordinary `connect`. It proves possession of the requester key, verifies the grant is issued by the granting party and bound to that endpoint, then opens only a loopback listener. A granting party credential can be revoked independently. Revocation deletes its unredeemed grant sessions. Any minted one-use transport capability remains limited by its short expiry.
 
-Keep the requester and broker roles distinct even if one harness can execute both. The skill is a protocol and CLI workflow: any model, shell runner, policy engine, or MCP client can implement the handoff. Do not depend on a named agent framework, vendor callback, or stateful model session.
+Keep the requester and granting party roles distinct even if one harness can execute both. The skill is a protocol and CLI workflow. Any model, shell runner, policy engine, or MCP client can implement the handoff. Do not depend on a named agent framework, vendor callback, or stateful model session.
 
 ## Manage resident commands
 

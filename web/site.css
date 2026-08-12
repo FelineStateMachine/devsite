@@ -123,6 +123,22 @@ details:not(.dropdown)[open] > summary::after {
   transform: rotate(45deg);
 }
 
+/* Keep each concepts table header visible until its table leaves the viewport. */
+.concepts-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--pico-background-color);
+}
+
+.concept-detail {
+  margin-block: calc(var(--pico-spacing) * 0.75);
+}
+
+.concept-detail > summary {
+  line-height: 1.175;
+}
+
 .brand {
   display: inline-flex;
   gap: calc(var(--pico-spacing) * 0.4);
@@ -269,10 +285,17 @@ details:not(.dropdown)[open] > summary::after {
   font-weight: 700;
 }
 .command-verb {
-  color: var(--pico-code-color);
+  color: var(--pico-ins-color);
+  font-weight: 700;
+}
+.command-option {
+  color: var(--pico-primary-hover);
+}
+.command-value {
+  color: var(--pico-color);
 }
 .command-secret {
-  color: var(--pico-muted-color);
+  color: var(--pico-del-color);
 }
 
 /* The sequence diagram is the signed-out page's one bespoke element. */

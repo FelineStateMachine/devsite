@@ -53,7 +53,7 @@ file permissions, server/API compatibility, the pinned signing key, credential b
 daemon registration, and remote/local resource drift. It does not open connections to
 hosted services.
 
-## Brokered access
+## Delegated access
 
 `devsite access request SERVICE --request FILE --key FILE --json` creates a public signed
 request and a separate private requester endpoint key. Its result contains
@@ -68,12 +68,12 @@ name, optional owner handle, and exact-name-match state.
 `devsite access grant --request FILE --plan --json` validates and resolves the signed
 request without issuing a grant. If resolution is ambiguous, supply an approved
 `--resource res_…`. The plan returns a server-signed `approved_plan` token covering the
-exact broker credential, request, resource, endpoint, and expiry. Apply with
+exact granting party credential, request, resource, endpoint, and expiry. Apply with
 `--approved-plan dsp_…`; changed inputs are rejected. A successful apply returns the request
 id, resource id, name and owner, requester endpoint id, expiry, short-lived `dss_…` grant,
 and `server`. Treat the grant as a secret and return only the grant and server to the
 requester.
 
 `devsite access connect GRANT --key FILE --json` is resident NDJSON. It validates that the
-grant is broker-issued and bound to the supplied key, then emits the same `listening`,
+grant was issued by the granting party and is bound to the supplied key. It then emits the same `listening`,
 `connection`, error, and shutdown lifecycle records as ordinary `connect`.

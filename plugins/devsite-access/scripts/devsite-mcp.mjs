@@ -53,7 +53,7 @@ const tools = [
   },
   {
     name: 'devsite_access_resolve',
-    description: 'Resolve a service keyword against services this scoped broker credential may delegate.',
+    description: 'Resolve a service keyword against services this scoped granting party credential may delegate.',
     inputSchema: {
       type: 'object',
       properties: { keyword: { type: 'string' } },

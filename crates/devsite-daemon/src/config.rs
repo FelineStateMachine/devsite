@@ -192,8 +192,10 @@ impl Paths {
         Ok(key)
     }
 
-    /// Move endpoint identity files written by CLI versions before the filenames
-    /// identified their purpose. Existing destination files always win.
+    /// Move legacy endpoint identity files to purpose-specific names.
+    /// Remove this migration helper in version 0.6.0.
+    /// The migration reads files only from this dev.site config directory.
+    /// Existing destination files take precedence.
     fn migrate_legacy_identity_files(&self) -> Result<()> {
         for (legacy, current) in [
             (self.root.join("identity.key"), self.identity()),
@@ -306,7 +308,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_identity_filenames_migrate_without_changing_the_key() {
+    fn legacy_identity_files_migrate_before_version_0_6_0_removes_compatibility() {
         let paths = test_paths();
         std::fs::create_dir_all(&paths.root).unwrap();
         let original = SecretKey::generate();

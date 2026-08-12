@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dev.site - concepts</title>
+<link rel="stylesheet" href="/vendor/pico.min.css">
+<link rel="stylesheet" href="/site.css">
+</head>
+<body>
+
+<header class="container">
+  <nav>
+    <ul>
+      <li>
+        <a href="/" class="contrast brand" aria-label="dev.site home">
+          <svg width="24" height="24" viewBox="2 2 20 20" aria-hidden="true"
+               xmlns="http://www.w3.org/2000/svg">
+            <path d="M16,15,12,7,8,15Zm-1,0L11.5,8"
+                  style="fill:none;stroke:var(--pico-primary);stroke-linecap:round;stroke-linejoin:round;stroke-width:2"></path>
+            <circle cx="12" cy="12" r="9"
+                    style="fill:none;stroke:var(--devsite-logo-ring, rgb(0,0,0));stroke-linecap:round;stroke-linejoin:round;stroke-width:2"></circle>
+          </svg>
+          <strong>dev.site</strong>
+        </a>
+      </li>
+    </ul>
+    <ul><li><a href="/">Home</a></li></ul>
+  </nav>
+</header>
+
+<main class="container">
+  <article>
+    <hgroup>
+      <h1>Important concepts</h1>
+    </hgroup>
+    <nav aria-label="On this page">
+      <ul>
+        <li><a href="#tickets">Tickets</a></li>
+        <li><a href="#keys">Keys</a></li>
+        <li><a href="#protocol">ALPN</a></li>
+      </ul>
+    </nav>
+  </article>
+
+  <section id="tickets" aria-labelledby="tickets-title">
+    <h2 id="tickets-title">Tickets</h2>
+    <p>A ticket is a serializable object that packages the information required for an
+      operation. dev.site passes tickets between the browser, CLI, control plane, and
+      daemon. Each ticket type defines its own use count, lifetime, binding, storage, and
+      revocation rules.</p>
+
+    <figure>
+      <table class="concepts-table">
+        <thead><tr><th>Ticket</th><th>Purpose</th><th>Issuer and consumer</th><th>Uses and lifetime</th><th>Binding, storage, and revocation</th></tr></thead>
+        <tbody>
+          <tr><td><code>dmt_…</code></td><td>Enroll one machine</td><td>Control plane issues it. The CLI and control plane use it.</td><td>One use. No automatic expiry.</td><td>It binds the enrolled endpoint after redemption. The control plane stores its hash. Revoke the machine entry.</td></tr>
+          <tr><td><code>dsm_…</code></td><td>Authenticate one machine</td><td>The control plane issues it. The CLI, daemon, and control plane use it.</td><td>Many uses. No automatic expiry.</td><td>It is a bearer ticket. Enrollment and daemon registration also need endpoint proof. Private config stores it. The server stores its hash. Revoke the ticket.</td></tr>
+          <tr><td><code>dst_…</code></td><td>Start one service connection</td><td>The control plane issues it for an authorised browser. The connector redeems it.</td><td>One use. Two minutes.</td><td>It names one viewer and service. The control plane stores its hash. Consume it, let it expire, or revoke access.</td></tr>
+          <tr><td><code>dss_…</code></td><td>Request stream capabilities</td><td>The control plane issues it. The connector and control plane use it.</td><td>Many uses. Eight hours, or at most 15 minutes when delegated.</td><td>It binds to the client endpoint. The connector keeps it in memory and the server stores its hash. Delete, expire, or revoke it.</td></tr>
+          <tr><td><code>dsp_…</code></td><td>Carry one delegated approval</td><td>The control-plane signing key issues it. A granting client and the control plane use it.</td><td>One grant per request id. Request and grant expiries limit it.</td><td>It binds the request id, service, issuer ticket, resource, endpoint, and expiries. The caller stores it. Revoke the issuer ticket or access.</td></tr>
+          <tr><td>Stream ticket<br><small>signed capability</small></td><td>Open one service stream</td><td>The control-plane signing key issues it. The daemon uses it.</td><td>One use. Three minutes.</td><td>It binds both endpoints, viewer, resource, and permission. The connector holds it in memory. Its nonce prevents reuse.</td></tr>
+          <tr><td>Browser session</td><td>Keep a user signed in</td><td>The control plane issues it after sign-in. The browser and control plane use it.</td><td>Many uses. Seven days.</td><td>It is a bearer ticket with no endpoint-key binding. An HttpOnly cookie holds it. The server stores its hash. Log out or let it expire.</td></tr>
+        </tbody>
+      </table>
+    </figure>
+
+    <details class="concept-detail">
+      <summary>Machine enrollment ticket</summary>
+      <p>A signed-in user creates a named <code>dmt_…</code> ticket. The CLI presents it with
+        a public endpoint key and proof from the matching private key. The server atomically
+        consumes the ticket, binds the machine entry to that endpoint, and returns a revocable
+        <code>dsm_…</code> machine ticket. Machine scopes such as
+        <code>service_grants:issue</code> originate on this enrollment ticket.</p>
+      <p><code>dmt_…</code> currently has no automatic expiry. Create it when needed and use it
+        promptly. A leak can enroll one endpoint until the ticket is used or revoked, but the
+        ticket cannot be used again after successful enrollment.</p>
+    </details>
+
+    <details class="concept-detail">
+      <summary>Service connection tickets</summary>
+      <p>An authorised browser creates a two-minute <code>dst_…</code> for one viewer and
+        service. <code>devsite connect</code> generates an in-memory client endpoint and
+        redeems that ticket for an eight-hour <code>dss_…</code> session bound to the client
+        key. Each local TCP connection then exchanges the session for a fresh, three-minute,
+        one-use stream ticket bound to both the client and daemon endpoints.</p>
+      <pre><code>dst_… → dss_… → stream ticket → encrypted service stream</code></pre>
+      <p>A <code>dss_…</code> is a reusable ticket. It can mint one stream ticket per TCP
+        connection until it expires, is deleted, or loses current authorisation.</p>
+    </details>
+
+    <details class="concept-detail">
+      <summary>Delegated access grant</summary>
+      <p>A requester creates a signed request containing an <code>agr_…</code> id, service
+        keyword, temporary public endpoint, and expiry. A human or automated granting party
+        resolves that keyword only among services its account may access. The server returns
+        a <code>dsp_…</code> plan signed over the exact request, issuer credential, selected
+        resource, endpoint, and expiries.</p>
+      <p>The plan is an approval ticket. It cannot open a stream. It binds the request id,
+        service, issuer ticket, resource, requester endpoint, and expiries. The control plane
+        verifies the request proof again. Applying the ticket returns a requester-bound
+        <code>dss_…</code> lasting at most 15 minutes. The request id permits one grant. The
+        resulting ticket can serve multiple TCP connections during that window.</p>
+    </details>
+
+    <details class="concept-detail">
+      <summary>Ticket security and storage</summary>
+      <p>Treat complete <code>dmt_…</code>, <code>dsm_…</code>, <code>dst_…</code>, and
+        <code>dss_…</code> values, browser cookies, and live capabilities as secrets. The
+        control plane stores hashes rather than plaintext bearer values. A
+        <code>dsp_…</code> is decodable and cannot connect by itself, but should stay inside
+        the approval workflow.</p>
+      <p><code>acct_…</code>, <code>res_…</code>, <code>machine_…</code>, <code>agr_…</code>,
+        handles, and endpoint ids are identifiers rather than tickets. Current access is
+        rechecked when tickets are redeemed and capabilities are requested. Resource,
+        sharing, session, and machine-ticket revocation narrow or terminate later use.</p>
+    </details>
+  </section>
+
+  <hr>
+
+  <section id="keys" aria-labelledby="keys-title">
+    <h2 id="keys-title">Keys and Endpoint Identities</h2>
+    <p>Ed25519 keys identify Iroh endpoints, prove that a request came from the endpoint it
+      names, and sign control-plane authorization. A public endpoint id is safe to share.
+      Its matching private key is what proves possession.</p>
+
+    <figure>
+      <table class="concepts-table">
+        <thead><tr><th>Key</th><th>Storage</th><th>Job</th></tr></thead>
+        <tbody>
+          <tr><td>Machine endpoint</td><td><code>devsite-endpoint.key</code></td><td>Persistent enrolled machine and daemon identity</td></tr>
+          <tr><td>Machine public endpoint</td><td><code>devsite-endpoint.pub</code> and server registration</td><td>Daemon address and capability audience</td></tr>
+          <tr><td>Ordinary connector</td><td>Process memory only</td><td>Binds a redeemed ticket and QUIC peer</td></tr>
+          <tr><td>Delegated requester</td><td>A caller-selected file such as <code>requester.key</code></td><td>Signs the request and uses the resulting grant</td></tr>
+          <tr><td>Control-plane signing key</td><td>Operator secret or <code>capability_signing.key</code></td><td>Signs approval plans and stream capabilities</td></tr>
+          <tr><td>Pinned server public key</td><td>Private machine <code>config.json</code></td><td>Defines which control-plane signatures the daemon trusts</td></tr>
+        </tbody>
+      </table>
+    </figure>
+
+    <details class="concept-detail">
+      <summary>Persistent machine identity</summary>
+      <p>The CLI creates <code>devsite-endpoint.key</code> in the resolved dev.site config
+        directory and preserves it across restarts. On Unix, private files are created with
+        mode <code>0600</code>. Its public half is written to
+        <code>devsite-endpoint.pub</code>, registered with the control plane, and used as the
+        daemon's Iroh endpoint id.</p>
+      <p>Before you upgrade to version 0.6.0, run <code>devsite login</code> or
+        <code>devsite daemon run</code> with an earlier version. That version moves
+        <code>identity.key</code> and <code>identity.pub</code> only from the dev.site config
+        directory. It does not scan the current directory, home directory, SSH directory, or
+        filesystem. It moves a legacy file only when its target file does not exist. Version
+        0.6.0 uses <code>devsite-endpoint.key</code> and
+        <code>devsite-endpoint.pub</code>. It does not read or move the legacy files.</p>
+    </details>
+
+    <details class="concept-detail">
+      <summary>Connector and requester keys</summary>
+      <p>An ordinary connector's key exists only in memory, so copying its bound session to a
+        different process is insufficient. Delegated access persists a temporary key at the
+        requested <code>--key</code> path. The CLI creates it without overwriting an existing
+        file and keeps it private on Unix. Share <code>request.json</code>, never
+        <code>requester.key</code>. Delete the key after the request and granted connection
+        finish.</p>
+    </details>
+
+    <details class="concept-detail">
+      <summary>Control-plane trust root</summary>
+      <p>The server uses one signing key for <code>dsp_…</code> plans and one-stream
+        capabilities. Production can provide it through <code>DEVSITE_SIGNING_KEY</code>. A
+        local server otherwise keeps <code>capability_signing.key</code> in its state
+        directory. Login pins only its public half. The daemon refuses to start without that
+        pin and rejects artifacts signed by another key.</p>
+      <p><code>devsite doctor</code> reports when the server's published public key differs
+        from the pinned value. Losing the private signing key prevents existing daemons from
+        trusting new capabilities. Compromise permits forged authorization. Rotation
+        therefore requires an explicit trust migration rather than a silent file change.</p>
+    </details>
+
+    <details class="concept-detail">
+      <summary>Key compromise boundaries</summary>
+      <p>A machine endpoint key cannot make authenticated API calls without its
+        <code>dsm_…</code>. The bearer ticket cannot satisfy endpoint proofs without the
+        key. Possession of both grants the enrolled machine's full authority and scopes, so
+        revoke the named machine entry and enroll a new endpoint if either pair may be
+        compromised. A temporary client key matters only while a matching session or
+        capability remains live.</p>
+    </details>
+  </section>
+
+  <hr>
+
+  <section id="protocol" aria-labelledby="protocol-title">
+    <h2 id="protocol-title">ALPN and the service wire protocol</h2>
+    <p>ALPN means Application-Layer Protocol Negotiation. dev.site currently defines one
+      service protocol: <code>devsite/tcp/1</code>. The client requests it and the daemon
+      advertises it during the Iroh QUIC handshake, selecting the wire format before either
+      side interprets an application frame.</p>
+
+    <pre><code>CLI ── HTTPS ──► dev.site control plane
+ │               session validation + capability issuance
+ │
+ └── Iroh QUIC, ALPN devsite/tcp/1 ──► owner daemon ── TCP ──► loopback service
+               encrypted service bytes</code></pre>
+
+    <p>The ALPN does not apply to the HTTPS API, OIDC, MCP adapter, or hosted application's
+      own protocol. PostgreSQL, HTTP, SSH, Redis, and other TCP protocols are opaque bytes
+      after dev.site authorizes the stream.</p>
+
+    <details class="concept-detail">
+      <summary>Service wire sequence</summary>
+      <ol>
+        <li>The client opens a bidirectional stream on an authenticated QUIC connection.</li>
+        <li>It sends a Postcard <code>Connect</code> request containing one signed capability.</li>
+        <li>The daemon verifies signature, audience, authenticated client key, expiry,
+          permission, resource, and one-use nonce.</li>
+        <li>The daemon connects to the resource's fixed loopback target.</li>
+        <li>It returns <code>Connected</code> or a deliberately coarse error.</li>
+        <li>After <code>Connected</code>, the remainder is the service's raw TCP byte stream.</li>
+      </ol>
+      <p>Request and response frames start with a four-byte little-endian length followed by
+        a Postcard payload. Length is checked before allocation and is capped at 4 MiB.
+        Authorization failures collapse to <code>Denied</code> so a peer cannot distinguish a
+        bad signature from an unknown or unshared resource.</p>
+    </details>
+
+    <details class="concept-detail">
+      <summary>ALPN security scope</summary>
+      <p>Iroh QUIC encrypts the network and authenticates endpoint keys. ALPN separates and
+        versions the application protocol. It does not grant service access: every stream
+        still requires a server-signed capability addressed to the daemon and bound to the
+        authenticated client. Relays carry encrypted QUIC traffic and do not terminate the
+        dev.site application stream. The local daemon-to-service TCP hop uses whatever
+        encryption the service protocol provides.</p>
+    </details>
+
+    <details class="concept-detail">
+      <summary>ALPN version compatibility</summary>
+      <p>The <code>/1</code> suffix is the compatibility boundary. An incompatible framing or
+        semantic change should use a new ALPN. Today the client requests one dev.site ALPN and
+        the daemon advertises one. There is no protocol fallback or multi-version negotiation.
+        <code>devsite doctor</code> compares the server's reported daemon protocol with the
+        CLI's compiled value.</p>
+    </details>
+  </section>
+</main>
+
+<footer class="container">
+  <nav>
+    <ul><li><a href="https://github.com/FelineStateMachine/devsite"
+               target="_blank" rel="noopener">GitHub</a></li></ul>
+  </nav>
+</footer>
+
+</body>
+</html>

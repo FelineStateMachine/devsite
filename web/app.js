@@ -473,6 +473,42 @@ function bindInstallControl() {
   });
 }
 
+const CLI_VERBS = new Set([
+  'access', 'connect', 'daemon', 'grant', 'host', 'link', 'login', 'request',
+  'resolve', 'run', 'service', 'set',
+]);
+
+/// Lightweight highlighting for the static examples below. This deliberately
+/// understands only devsite's command vocabulary: it is presentation, not a
+/// shell parser, and preserving the original text keeps selection/copy honest.
+function highlightCliExamples(container) {
+  container.querySelectorAll('pre > code').forEach((code) => {
+    const source = code.textContent;
+    if (!source.trimStart().startsWith('devsite ')) return;
+
+    const highlighted = document.createDocumentFragment();
+    let wordIndex = 0;
+    source.split(/(\s+)/).forEach((token) => {
+      if (!token || /^\s+$/.test(token)) {
+        highlighted.append(token);
+        if (token.includes('\n')) wordIndex = 0;
+        return;
+      }
+
+      const span = document.createElement('span');
+      if (wordIndex === 0 && token === 'devsite') span.className = 'command-executable';
+      else if (wordIndex <= 2 && CLI_VERBS.has(token)) span.className = 'command-verb';
+      else if (token.startsWith('--')) span.className = 'command-option';
+      else if (/^(?:dmt|dsp|dss|dst)_/.test(token)) span.className = 'command-secret';
+      else span.className = 'command-value';
+      span.textContent = token;
+      highlighted.append(span);
+      wordIndex += 1;
+    });
+    code.replaceChildren(highlighted);
+  });
+}
+
 function renderSignedOut() {
   setPageTitle('home');
   clearTheme();
@@ -539,10 +575,37 @@ function renderSignedOut() {
         <pre><code>devsite connect dst_***</code></pre>
       </article>
       <article>
+        <h3>Delegate Granular Access</h3>
+        <blockquote><p>A sandboxed agent can request a service by keyword. The request is matched to an accessible service, and a scoped grant is presented for approval.</p>
+          <p>The requester receives only a short-lived grant bound to the selected
+          service and its temporary endpoint.</p></blockquote>
+        <pre><code>devsite access request postgres --request request.json --key requester.key</code></pre>
+        <blockquote>Resolution is limited to services available to the approving account. Grants
+          are short-lived and revocable.</blockquote>
+        <pre><code>devsite access resolve postgres
+devsite access grant --request request.json --plan
+devsite access grant --request request.json --approved-plan dsp_***</code></pre>
+        <blockquote>The requester opens an on-demand, endpoint-bound connection to the selected service.</blockquote>
+        <pre><code>devsite access connect dss_*** --key requester.key</code></pre>
+      </article>
+      <article>
         <h3>Persist the Daemon</h3>
         <pre><code>devsite daemon run</code></pre>
-        <blockquote>autorun it with Homebrew services or systemd</blockquote>
+        <blockquote>autorun it with Homebrew services or systemd to keep services available for
+          on-demand connections</blockquote>
       </article>
+    </details>
+
+    <details>
+      <summary>Important Concepts</summary>
+      <p>Tickets, keys, and the ALPN tell the story of how it works</p>
+      <nav aria-label="Security concept guides">
+        <ul>
+          <li><a href="/concepts.html#tickets">Tickets</a></li>
+          <li><a href="/concepts.html#keys">Keys</a></li>
+          <li><a href="/concepts.html#protocol">ALPN</a></li>
+        </ul>
+      </nav>
     </details>`;
 
   pageFooter.innerHTML = `
@@ -552,6 +615,7 @@ function renderSignedOut() {
     </nav>`;
   pageFooter.hidden = false;
   bindInstallControl();
+  highlightCliExamples(main);
 }
 
 function renderClaimHandle() {

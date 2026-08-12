@@ -1,51 +1,44 @@
-dev.site v0.4.0 makes the CLI an agent-ready control surface, adds scoped brokered access
-for sandboxed workers, and separates the application identity boundary from its default
-OIDC provider.
+dev.site v0.5.0 improves the public documentation and homepage guidance for access, tickets,
+keys, and service transport.
 
 ## highlights
 
-- devsite resources list --json now reconciles remote resources with local hosting state.
-- Resource upserts and removals support --plan / --dry-run, and devsite doctor --json
-  reports state-aware recovery actions without probing hosted services.
-- Endpoint identity files now use the semantic devsite-endpoint.key and
-  devsite-endpoint.pub names. Existing files in the devsite configuration directory are
-  migrated automatically.
-- A portable, model- and harness-neutral CLI skill documents the JSON and resident-process
-  contracts. Release archives now include the complete docs, skills, and
-  plugins/devsite-access bundles.
+- New concept guides explain tickets, keys and endpoint identities, and the ALPN wire
+  protocol.
+- The homepage shows the delegated access workflow from request through service connection.
+- Command examples use colour to distinguish commands, subcommands, options, values, and
+  ticket values.
+- Documentation now calls the approving human or automated process the granting party.
 
-## scoped service broker
+## tickets, keys, and protocol
 
-A sandboxed requester can generate a signed service-keyword request and retain its private
-endpoint key. A machine enrolled with the explicit service_grants:issue scope can resolve
-that keyword among services its account may access, review a dry-run, and issue a
-short-lived grant bound to the requester endpoint.
+The ticket guide explains each ticket type, its issuer, use count, lifetime, storage, and
+revocation rules.
 
-Grant application requires a server-signed dsp_ approval token over the exact broker
-credential, request, resource, endpoint, and expiry. Request ids are single-use, grants
-expire within 15 minutes, ambiguous service matches require an explicit resource id, and
-revoking the broker credential removes grant sessions it issued.
+The key guide explains endpoint identity, requester keys, control-plane signing keys, and
+private key storage.
 
-The optional devsite-access plugin exposes the same workflow through a portable MCP
-2026-07-28 stdio adapter. It uses server/discover and per-request protocol metadata, has
-no initialize handshake or connection-scoped session state, supports request cancellation,
-and prevents its generic CLI tool from bypassing grant planning.
+The ALPN guide describes `devsite/tcp/1`, its QUIC handshake, frame format, capability
+checks, and version boundary.
 
-## authentication portability
+## identity file migration
 
-Shoo remains the default login provider, but the server now treats it as an OIDC adapter
-rather than part of the account model. Deployments can configure another public OIDC
-provider with explicit issuer, authorization, token, JWKS, client, scope, and algorithm
-settings. Accounts are keyed by verified (issuer, subject) identity pairs, and the browser
-never receives provider tokens.
+Version 0.5.0 continues to move legacy `identity.key` and `identity.pub` files to
+`devsite-endpoint.key` and `devsite-endpoint.pub`.
+
+The migration checks only the dev.site config directory. It moves a legacy file only when
+the destination file does not exist.
+
+`devsite doctor` now warns that version 0.6.0 removes legacy file support.
+
+Before you upgrade to version 0.6.0, run `devsite login` or `devsite daemon run` with
+version 0.5.0 or an earlier version.
 
 ## upgrade notes
 
-- Database migrations are automatic.
-- Existing CLI and daemon enrollment continues to work. Broker authority is not added to
-  existing machine credentials; create a new machine ticket with the service-grant option
-  enabled when a machine should act as a broker.
-- Deploy the v0.4.0 control plane before using the new access commands.
+- Database migrations are not required.
+- Existing `devsite-endpoint.key` and `devsite-endpoint.pub` files continue to work.
+- Version 0.6.0 will not read or move `identity.key` or `identity.pub`.
 
 Homebrew users can upgrade with:
 

@@ -61,7 +61,7 @@ enum Command {
     /// Host local TCP services.
     #[command(subcommand)]
     Service(ServiceCommand),
-    /// Request and broker short-lived endpoint-bound service access.
+    /// Request and grant short-lived endpoint-bound service access.
     #[command(subcommand)]
     Access(AccessCommand),
     /// Forward a local TCP port to a service you may access.
@@ -157,9 +157,9 @@ enum ServiceCommand {
 enum AccessCommand {
     /// Create a signed request without contacting the control plane.
     Request {
-        /// Human service keyword for a trusted broker to resolve.
+        /// Human service keyword for a trusted granting party to resolve.
         service: String,
-        /// Public JSON request to hand to the broker.
+        /// Public JSON request to give to the granting party.
         #[arg(long, value_name = "FILE")]
         request: std::path::PathBuf,
         /// Private endpoint key retained by the requesting sandbox.
@@ -169,7 +169,7 @@ enum AccessCommand {
         #[arg(long, default_value_t = 300)]
         ttl: u64,
     },
-    /// Find services this broker credential may delegate.
+    /// Find services that this granting party may delegate.
     Resolve { keyword: String },
     /// Validate or issue a grant for a signed request.
     Grant {
@@ -189,9 +189,9 @@ enum AccessCommand {
         #[arg(long, requires = "request")]
         approved_plan: Option<String>,
     },
-    /// Forward a local TCP port using an endpoint-bound broker grant.
+    /// Forward a local TCP port with an endpoint-bound delegated access grant.
     Connect {
-        /// Session grant returned by the broker.
+        /// Session grant returned by the granting party.
         grant: String,
         /// Private endpoint key created with `access request`.
         #[arg(long, value_name = "FILE")]
@@ -1251,7 +1251,7 @@ fn create_access_request(
     } else {
         println!("created signed request for {service}");
         println!(
-            "  request  {} (share with the broker)",
+            "  request  {} (give to the granting party)",
             request_path.display()
         );
         println!(
@@ -1344,7 +1344,7 @@ async fn grant_access(
                 .iter()
                 .any(|item| item.resource_id == claims.resource_id)
             {
-                bail!("the approved service is no longer accessible to this broker");
+                bail!("the approved service is no longer accessible to this granting party");
             }
             claims.resource_id.clone()
         }
@@ -1453,7 +1453,7 @@ async fn connect_grant(
     output: Output,
 ) -> Result<()> {
     if !grant.starts_with("dss_") {
-        bail!("broker grant must start with dss_");
+        bail!("delegated access grant must start with dss_");
     }
     let raw = std::fs::read(key_path).with_context(|| format!("reading {}", key_path.display()))?;
     let bytes: [u8; 32] = raw
@@ -1466,7 +1466,7 @@ async fn connect_grant(
     let session: TunnelSessionInfo = api
         .get("/api/tunnel/session")
         .await
-        .context("validating broker grant")?;
+        .context("validating delegated access grant")?;
     if session.requester_endpoint_id != client.endpoint_id().to_string() || !session.brokered {
         bail!("the grant is not bound to the supplied requester endpoint key");
     }
@@ -2164,7 +2164,7 @@ async fn doctor(paths: &Paths, output: Output) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let legacy = paths.root.join("identity.key");
             let message = if legacy.exists() {
-                "A legacy identity.key exists and will migrate on the next login or daemon start."
+                "Legacy identity.key and identity.pub support ends in version 0.6.0. Run `devsite login` or `devsite daemon run` before you upgrade. The command moves these files."
             } else {
                 "No endpoint identity exists yet."
             };
