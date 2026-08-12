@@ -237,7 +237,7 @@ function siteRow(item, { onClick, from } = {}) {
     + (from ? ` <small>from @${esc(from)}</small>` : '');
 
   if (item.kind === 'link') {
-    const note = item.visibility === 'public' ? '' : `${esc(item.visibility)} · `;
+    const note = item.visibility === 'public' ? '' : `${esc(item.visibility)} - `;
     li.innerHTML =
       `<a href="${esc(item.url)}" target="_blank" rel="ugc nofollow noopener noreferrer">${name}</a>` +
       `<small class="state">${note}${linkHost(item)}</small>`;
@@ -502,7 +502,7 @@ function resourceControl(resource) {
   item.innerHTML = `
     <div>
       <strong>${esc(resource.name)}</strong>
-      <small>${esc(resource.kind)} · ${esc(resource.visibility)}</small>
+      <small>${esc(resource.kind)} - ${esc(resource.visibility)}</small>
     </div>
     <div class="dashboard-actions"></div>`;
   const actions = item.querySelector('.dashboard-actions');
@@ -510,7 +510,7 @@ function resourceControl(resource) {
     const button = document.createElement('button');
     button.className = 'secondary outline revoke-share';
     button.type = 'button';
-    button.textContent = `Revoke @${share.handle} · ${share.status}`;
+    button.textContent = `Revoke @${share.handle} - ${share.status}`;
     button.addEventListener('click', async () => {
       button.setAttribute('aria-busy', 'true');
       try {
@@ -537,11 +537,11 @@ function resourceControl(resource) {
 
 function incomingShareControl(share) {
   const item = document.createElement('li');
-  const destination = share.url ? ` · ${share.url}` : '';
+  const destination = share.url ? ` - ${share.url}` : '';
   item.innerHTML = `
     <div>
       <strong>${esc(share.name)}</strong>
-      <small>from @${esc(share.owner_handle)} · ${esc(share.kind)}${esc(destination)}</small>
+      <small>from @${esc(share.owner_handle)} - ${esc(share.kind)}${esc(destination)}</small>
     </div>
     <div class="dashboard-actions"></div>`;
   const actions = item.querySelector('.dashboard-actions');
