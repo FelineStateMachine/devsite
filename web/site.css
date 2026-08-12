@@ -57,6 +57,23 @@ body > main {
   padding-block: var(--pico-block-spacing-vertical);
 }
 
+body > header > nav {
+  align-items: center;
+}
+
+#page-footer nav {
+  justify-content: flex-end;
+}
+
+main:has(.sequence),
+main:has(.sequence) + #page-footer {
+  user-select: none;
+}
+
+main:has(.sequence) :is(pre, code, #install-command) {
+  user-select: text;
+}
+
 .brand {
   display: inline-flex;
   gap: calc(var(--pico-spacing) * 0.4);
@@ -64,6 +81,8 @@ body > main {
 }
 .brand > svg {
   flex: none;
+  width: 2.5rem;
+  height: 2.5rem;
 }
 
 .entries + .folder,
@@ -206,6 +225,153 @@ body > main {
 .command-secret {
   color: var(--pico-muted-color);
 }
+
+/* The sequence diagram is the signed-out page's one bespoke element. */
+main > article:has(> .sequence) h1 > span {
+  display: block;
+  overflow: hidden;
+  font-family: var(--pico-font-family-monospace);
+  font-size: clamp(0.55rem, 1.3vw, 1.1rem);
+  font-weight: 400;
+  line-height: 1;
+  white-space: pre;
+}
+
+main > article:has(> .sequence) h1 {
+  margin-bottom: var(--pico-typography-spacing-vertical);
+}
+
+.sequence {
+  margin: var(--pico-block-spacing-vertical) 0 0;
+}
+.sequence figcaption {
+  color: var(--pico-muted-color);
+  font-size: 0.75rem;
+  text-align: center;
+}
+.sequence > header {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: calc(var(--pico-spacing) * 0.5);
+}
+.sequence > header > strong {
+  padding: calc(var(--pico-spacing) * 0.5);
+  border-radius: var(--pico-border-radius);
+  background: var(--pico-form-element-background-color);
+  font-size: 0.75rem;
+  text-align: center;
+}
+.sequence > div {
+  position: relative;
+  height: 19rem;
+}
+.sequence > div > i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-left: var(--pico-border-width) dashed var(--pico-form-element-border-color);
+}
+.sequence > div > i:nth-of-type(1) {
+  left: 16.667%;
+}
+.sequence > div > i:nth-of-type(2) {
+  left: 50%;
+}
+.sequence > div > i:nth-of-type(3) {
+  left: 83.333%;
+}
+.sequence ol {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 0;
+}
+.sequence li {
+  position: absolute;
+  height: 1.35rem;
+  padding: 0 0.25rem;
+  border-top: var(--pico-border-width) solid var(--pico-primary);
+  color: var(--pico-muted-color);
+  font-size: clamp(0.58rem, 1.5vw, 0.7rem);
+  line-height: 1.15;
+  text-align: center;
+  list-style: none;
+}
+.sequence li > span {
+  position: relative;
+  display: inline-block;
+  padding-inline: 0.25rem;
+  background: var(--pico-card-background-color);
+  transform: translateY(calc(-100% - 0.2rem));
+}
+.sequence li::after {
+  position: absolute;
+  top: -0.28rem;
+  content: '';
+  border-block: 0.24rem solid transparent;
+}
+.sequence li:nth-child(1),
+.sequence li:nth-child(2),
+.sequence li:nth-child(3),
+.sequence li:nth-child(4),
+.sequence li:nth-child(5) {
+  left: 50%;
+  width: 33.333%;
+}
+.sequence li:nth-child(1) {
+  top: 2.3rem;
+  left: 16.667%;
+}
+.sequence li:nth-child(2) {
+  top: 5rem;
+}
+.sequence li:nth-child(3) {
+  top: 7.7rem;
+}
+.sequence li:nth-child(4) {
+  top: 10.4rem;
+}
+.sequence li:nth-child(5) {
+  top: 13.1rem;
+}
+.sequence li:nth-child(6) {
+  top: 16rem;
+  left: 16.667%;
+  width: 66.666%;
+  border-top-style: dashed;
+  animation: sequence-flow 1.4s ease-in-out infinite alternate;
+}
+.sequence li:nth-child(1)::after,
+.sequence li:nth-child(3)::after,
+.sequence li:nth-child(5)::after {
+  right: -0.05rem;
+  border-left: 0.42rem solid var(--pico-primary);
+}
+.sequence li:nth-child(2)::after,
+.sequence li:nth-child(4)::after,
+.sequence li:nth-child(6)::after {
+  left: -0.05rem;
+  border-right: 0.42rem solid var(--pico-primary);
+}
+.sequence li:nth-child(6)::before {
+  position: absolute;
+  top: -0.28rem;
+  right: -0.05rem;
+  content: '';
+  border-block: 0.24rem solid transparent;
+  border-left: 0.42rem solid var(--pico-primary);
+}
+
+@keyframes sequence-flow {
+  to { opacity: 0.55; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sequence li:nth-child(6) {
+    animation: none;
+  }
+}
+
 .secret-command > button {
   flex: none;
   width: auto;

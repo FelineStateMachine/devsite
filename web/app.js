@@ -12,6 +12,7 @@
 const SHOO = 'https://shoo.dev';
 const $ = (id) => document.getElementById(id);
 const main = $('main');
+const pageFooter = $('page-footer');
 
 let me = null;
 
@@ -127,6 +128,7 @@ async function completeSignIn() {
 /// stylesheet in the page. This was wrong until it was tested in a browser, and
 /// the failure was silent: themes stored, served, and ignored.
 function applyTheme(handle, declarations = []) {
+  document.querySelector('.brand strong').hidden = false;
   const root = document.documentElement;
   // Belt and braces: handles are already restricted to this alphabet server-side.
   const scope = String(handle).replace(/[^A-Za-z0-9_-]/g, '');
@@ -152,9 +154,12 @@ function applyTheme(handle, declarations = []) {
 }
 
 function clearTheme() {
+  document.querySelector('.brand strong').hidden = false;
   delete document.documentElement.dataset.profile;
   delete document.documentElement.dataset.theme;
   $('profile-theme').textContent = '';
+  pageFooter.replaceChildren();
+  pageFooter.hidden = true;
   requestAnimationFrame(updateLogoContrast);
 }
 
@@ -444,16 +449,111 @@ function openService(item) {
 
 function renderSignedOut() {
   clearTheme();
+  document.querySelector('.brand strong').hidden = true;
+  const platform = navigator.userAgentData?.platform || navigator.platform || '';
+  const isMacOS = /mac/i.test(platform) || /Macintosh|Mac OS X/i.test(navigator.userAgent);
+  const installControl = isMacOS
+    ? `<fieldset role="group">
+        <input id="install-command" aria-label="Homebrew install command"
+               value="brew install FelineStateMachine/tap/devsite" readonly>
+        <button id="copy-install" type="button">Copy</button>
+      </fieldset>`
+    : `<fieldset role="group">
+        <input aria-label="Latest binary release"
+               value="GitHub · latest devsite binary release" readonly>
+        <a href="https://github.com/FelineStateMachine/devsite/releases/latest"
+           role="button">Download</a>
+      </fieldset>`;
   main.innerHTML = `
     <article>
       <hgroup>
-        <h1>Your public work and your private local services, on one page.</h1>
-        <p>
-          Private services stay on your machine. Nothing is deployed, no port is opened,
-          and the page you are reading never carries their traffic.
-        </p>
+        <h1 aria-label="dev.site"><span aria-hidden="true">    █                                ▀      ▄
+ ▄▄▄█   ▄▄▄   ▄   ▄          ▄▄▄   ▄▄▄    ▄▄█▄▄   ▄▄▄
+█▀ ▀█  █▀  █  ▀▄ ▄▀         █   ▀    █      █    █▀  █
+█   █  █▀▀▀▀   █▄█           ▀▀▀▄    █      █    █▀▀▀▀
+▀█▄██  ▀█▄▄▀    █      █    ▀▄▄▄▀  ▄▄█▄▄    ▀▄▄  ▀█▄▄▀</span></h1>
+        <p>links and services across all of your development sites</p>
       </hgroup>
-    </article>`;
+      <figure class="sequence">
+        <figcaption>authorization only - no service bytes</figcaption>
+        <header aria-hidden="true">
+          <strong>host cli</strong>
+          <strong>dev.site</strong>
+          <strong>approved user</strong>
+        </header>
+        <div>
+          <i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i>
+          <ol aria-label="A host publishes as an endpoint. An approved user redeems a one-use ticket into a client-bound session, requests a signed capability for each connection, then opens an end-to-end encrypted Iroh QUIC stream to the host service.">
+            <li><span>publish endpoint id</span></li>
+            <li><span>redeem one-use ticket + client key</span></li>
+            <li><span>client-bound session</span></li>
+            <li><span>request one-stream capability</span></li>
+            <li><span>signed capability + daemon id</span></li>
+            <li><span>end-to-end encrypted Iroh QUIC</span></li>
+          </ol>
+        </div>
+      </figure>
+    </article>
+
+    <section aria-labelledby="install-title">
+      <h2 id="install-title">Install</h2>
+      ${installControl}
+    </section>
+
+    <hr>
+
+    <details>
+      <summary>Overview</summary>
+      <p>Store useful URLs, shared services, and temporary access</p>
+      <article>
+        <h3>Machine Enrollment</h3>
+        <pre><code>devsite login dsm_***</code></pre>
+        <blockquote>Use a revocable machine credential from your dashboard</blockquote>
+      </article>
+      <article>
+        <h3>Add Links to your site</h3>
+        <pre><code>devsite link set --name docs --url https://docs.example.com --public</code></pre>
+        <blockquote>List a public, private, shared URLs on your page</blockquote>
+      </article>
+      <article>
+        <h3>Share your Services</h3>
+        <pre><code>devsite service host 5432 --name postgres</code></pre>
+        <blockquote>
+          <p>Access any local TCP port. never publicly accessible</p>
+          <p>Service is accessed anywhere with a single use ticket.</p>
+        </blockquote>
+        <pre><code>devsite connect dst_***</code></pre>
+      </article>
+      <article>
+        <h3>Persist the Daemon</h3>
+        <pre><code>devsite daemon run</code></pre>
+        <blockquote>autorun it with Homebrew services or systemd</blockquote>
+      </article>
+    </details>`;
+
+  pageFooter.innerHTML = `
+    <nav aria-label="Footer">
+      <ul><li><a href="https://github.com/FelineStateMachine/devsite"
+                 target="_blank" rel="noopener">GitHub</a></li></ul>
+    </nav>`;
+  pageFooter.hidden = false;
+
+  if (isMacOS) {
+    const installCommand = $('install-command');
+    const copyInstall = $('copy-install');
+    let copyReset;
+    copyInstall.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(installCommand.value);
+        copyInstall.textContent = 'Copied';
+        clearTimeout(copyReset);
+        copyReset = setTimeout(() => { copyInstall.textContent = 'Copy'; }, 1400);
+      } catch {
+        copyInstall.textContent = 'Select';
+        installCommand.select();
+      }
+    });
+  }
 }
 
 function renderClaimHandle() {
