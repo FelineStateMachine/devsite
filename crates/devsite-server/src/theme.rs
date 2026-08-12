@@ -94,6 +94,7 @@ const PROPERTIES: &[(&str, Kind)] = &[
     ("--pico-mark-background-color", Kind::Color),
     ("--pico-mark-color", Kind::Color),
     ("--pico-blockquote-border-color", Kind::Color),
+    ("--pico-accordion-open-summary-color", Kind::Color),
     // `ins` and `del` also colour the site's own confirmations and refusals.
     ("--pico-ins-color", Kind::Color),
     ("--pico-del-color", Kind::Color),
@@ -101,6 +102,10 @@ const PROPERTIES: &[(&str, Kind)] = &[
     ("--pico-form-element-background-color", Kind::Color),
     ("--pico-form-element-border-color", Kind::Color),
     ("--pico-form-element-color", Kind::Color),
+    // -- effects -------------------------------------------------------------
+    // A profile may remove Pico's global shadow, but may not supply arbitrary
+    // shadow syntax that could visually escape the component it belongs to.
+    ("--pico-box-shadow", Kind::Keyword(&["unset"])),
     // -- metrics -------------------------------------------------------------
     ("--pico-border-radius", Kind::Length),
     ("--pico-border-width", Kind::Length),
@@ -588,14 +593,29 @@ mod tests {
             --pico-background-color: light-dark(#fefae0, #283618);
             --pico-color: light-dark(#283618, #fefae0);
             --pico-primary: light-dark(#bc6c25, #dda15e);
+            --pico-accordion-open-summary-color: light-dark(#606c38, #dda15e);
+            --pico-box-shadow: unset;
         ";
         assert_eq!(
             css(source).unwrap(),
             "--devsite-scheme: auto;\n\
              --pico-background-color: light-dark(#fefae0, #283618);\n\
              --pico-color: light-dark(#283618, #fefae0);\n\
-             --pico-primary: light-dark(#bc6c25, #dda15e);\n"
+             --pico-primary: light-dark(#bc6c25, #dda15e);\n\
+             --pico-accordion-open-summary-color: light-dark(#606c38, #dda15e);\n\
+             --pico-box-shadow: unset;\n"
         );
+    }
+
+    #[test]
+    fn box_shadow_can_only_be_removed() {
+        assert!(parse("--pico-box-shadow: unset;").is_ok());
+        for value in ["none", "0 0 1rem red", "var(--shadow)"] {
+            assert!(
+                parse(&format!("--pico-box-shadow: {value};")).is_err(),
+                "{value} should be refused"
+            );
+        }
     }
 
     #[test]

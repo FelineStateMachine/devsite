@@ -149,8 +149,9 @@ the failure mode the list exists to prevent.
 | Surfaces | `--pico-background-color`, `--pico-color`, `--pico-muted-color`, `--pico-muted-border-color`, `--pico-border-color`, `--pico-text-selection-color` | colour |
 | Accents | `--pico-primary` and its `-background`, `-hover`, `-hover-background`, `-inverse`, `-underline`, `-focus`; `--pico-secondary` and its `-background`, `-hover`, `-inverse`; `--pico-contrast` and its `-background`, `-inverse` | colour |
 | Headings | `--pico-h1-color` … `--pico-h6-color` | colour |
-| Blocks | `--pico-card-background-color`, `--pico-card-border-color`, `--pico-card-sectioning-background-color`, `--pico-code-background-color`, `--pico-code-color`, `--pico-mark-background-color`, `--pico-mark-color`, `--pico-blockquote-border-color`, `--pico-ins-color`, `--pico-del-color` | colour |
+| Blocks | `--pico-card-background-color`, `--pico-card-border-color`, `--pico-card-sectioning-background-color`, `--pico-code-background-color`, `--pico-code-color`, `--pico-mark-background-color`, `--pico-mark-color`, `--pico-blockquote-border-color`, `--pico-accordion-open-summary-color`, `--pico-ins-color`, `--pico-del-color` | colour |
 | Form elements | `--pico-form-element-background-color`, `--pico-form-element-border-color`, `--pico-form-element-color` | colour |
+| Effects | `--pico-box-shadow` | `unset` |
 | Metrics | `--pico-border-radius`, `--pico-border-width`, `--pico-outline-width`, `--pico-spacing`, `--pico-block-spacing-vertical`, `--pico-block-spacing-horizontal`, `--pico-typography-spacing-vertical`, `--pico-form-element-spacing-vertical`, `--pico-form-element-spacing-horizontal`, `--pico-nav-element-spacing-vertical`, `--pico-nav-element-spacing-horizontal`, `--pico-text-underline-offset`, `--pico-font-size` | length |
 | Type | `--pico-line-height` | number |
 | | `--pico-font-weight` | `400` or `700` |
@@ -225,8 +226,9 @@ devsite theme clear
 --pico-color: light-dark(#283618, #fefae0);
 --pico-primary: light-dark(#bc6c25, #dda15e);
 --pico-primary-hover: light-dark(#606c38, #fefae0);
+--pico-accordion-open-summary-color: light-dark(#606c38, #dda15e);
+--pico-box-shadow: unset;
 --pico-border-radius: 0.5rem;
---pico-font-weight: 400;
 ```
 
 Rejections are specific and name the offending declaration:

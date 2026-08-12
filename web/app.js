@@ -22,6 +22,10 @@ const esc = (value) =>
   String(value).replace(/[&<>"']/g, (c) =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+function setPageTitle(suffix = '') {
+  document.title = suffix ? `dev.site - ${suffix}` : 'dev.site';
+}
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     credentials: 'same-origin',
@@ -319,6 +323,7 @@ function folder(name, items) {
 }
 
 function renderProfile(profile) {
+  setPageTitle(`@${profile.handle}`);
   applyTheme(profile.handle, profile.theme);
   main.innerHTML = '';
 
@@ -449,6 +454,7 @@ function openService(item) {
 // -- setup views ---------------------------------------------------------------
 
 function renderSignedOut() {
+  setPageTitle('home');
   clearTheme();
   document.querySelector('.brand strong').hidden = true;
   const platform = navigator.userAgentData?.platform || navigator.platform || '';
@@ -558,6 +564,7 @@ function renderSignedOut() {
 }
 
 function renderClaimHandle() {
+  setPageTitle('dashboard');
   clearTheme();
   main.innerHTML = `
     <article>
@@ -638,11 +645,13 @@ function resourceControl(resource) {
 
 function incomingShareControl(share) {
   const item = document.createElement('li');
-  const destination = share.url ? ` - ${share.url}` : '';
+  const destination = share.url
+    ? ` - <span data-selectable>${esc(share.url)}</span>`
+    : '';
   item.innerHTML = `
     <div>
       <strong>${esc(share.name)}</strong>
-      <small>from @${esc(share.owner_handle)} - ${esc(share.kind)}${esc(destination)}</small>
+      <small>from @${esc(share.owner_handle)} - ${esc(share.kind)}${destination}</small>
     </div>
     <div class="dashboard-actions"></div>`;
   const actions = item.querySelector('.dashboard-actions');
@@ -745,6 +754,7 @@ async function signOut(button) {
 }
 
 async function showDashboard(newCredential = null) {
+  setPageTitle('dashboard');
   clearTheme();
   main.setAttribute('aria-busy', 'true');
   const [resourceListing, incomingListing, credentialListing, settings] = await Promise.all([
@@ -774,30 +784,36 @@ async function showDashboard(newCredential = null) {
     </article>
 
     <article>
-      <header><strong>Incoming shares</strong></header>
-      <p>Nothing is added to your profile until you accept it. Link destinations are shown
-      as text so you can inspect them without opening them.</p>
-      <ul class="dashboard-list" id="incoming-shares"></ul>
+      <details>
+        <summary><strong>Incoming shares</strong></summary>
+        <p>Nothing is added to your profile until you accept it. Link destinations are shown
+        as text so you can inspect them without opening them.</p>
+        <ul class="dashboard-list" id="incoming-shares"></ul>
+      </details>
     </article>
 
     <article>
-      <header><strong>Shared by you</strong></header>
-      <ul class="dashboard-list" id="dashboard-resources"></ul>
+      <details>
+        <summary><strong>Shared by you</strong></summary>
+        <ul class="dashboard-list" id="dashboard-resources"></ul>
+      </details>
     </article>
 
     <article>
-      <header><strong>Machine credentials</strong></header>
-      <p>Each credential remains valid until you revoke it. Its secret is shown once.</p>
-      <form id="credential-form">
-        <fieldset role="group">
-          <input id="credential-name" name="name" maxlength="60"
-                 placeholder="This MacBook" aria-label="Machine name" required>
-          <button type="submit">Create</button>
-        </fieldset>
-        <small id="credential-note"></small>
-      </form>
-      <div id="new-machine-token"></div>
-      <ul class="dashboard-list" id="machine-credentials"></ul>
+      <details${newCredential ? ' open' : ''}>
+        <summary><strong>Machine credentials</strong></summary>
+        <p>Each credential remains valid until you revoke it. Its secret is shown once.</p>
+        <form id="credential-form">
+          <fieldset role="group">
+            <input id="credential-name" name="name" maxlength="60"
+                   placeholder="This MacBook" aria-label="Machine name" required>
+            <button type="submit">Create</button>
+          </fieldset>
+          <small id="credential-note"></small>
+        </form>
+        <div id="new-machine-token"></div>
+        <ul class="dashboard-list" id="machine-credentials"></ul>
+      </details>
     </article>
 
     <article>
@@ -882,6 +898,7 @@ async function showDashboard(newCredential = null) {
 
 async function route() {
   const path = location.pathname;
+  setPageTitle();
 
   if (path === '/auth/callback') {
     main.innerHTML = '<article aria-busy="true">Signing you in…</article>';

@@ -74,6 +74,17 @@ main:has(.sequence) :is(pre, code, #install-command) {
   user-select: text;
 }
 
+/* Dashboard labels and controls are interface, not document copy. Keep the
+ * values someone may reasonably copy selectable: form input, commands, link
+ * destinations, and errors worth carrying into a bug report. */
+main:has(#private-only) {
+  user-select: none;
+}
+
+main:has(#private-only) :is(input, textarea, pre, code, [data-selectable], .error) {
+  user-select: text;
+}
+
 .brand {
   display: inline-flex;
   gap: calc(var(--pico-spacing) * 0.4);
