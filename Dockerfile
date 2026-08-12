@@ -1,12 +1,17 @@
+# syntax=docker/dockerfile:1.7
+
 # Keep the checked-in web source readable and only minify the production copy.
 FROM node:24-bookworm-slim AS web
 
 WORKDIR /src
-COPY web ./web
 
 # Versions are exact so rebuilding a commit cannot silently change its assets.
-RUN npm install --global esbuild@0.25.12 html-minifier-terser@7.2.0 \
- && mkdir /out \
+RUN npm install --global esbuild@0.25.12 html-minifier-terser@7.2.0
+
+# Tool installation is independent of the source, so ordinary web edits only
+# invalidate the small minification layer below.
+COPY web ./web
+RUN mkdir /out \
  && cp -R web/. /out/ \
  && esbuild web/app.js \
       --format=esm \
@@ -27,13 +32,19 @@ RUN npm install --global esbuild@0.25.12 html-minifier-terser@7.2.0 \
       --use-short-doctype \
       --output /out/index.html
 
-# The control plane, built from source in one go.
+# The control plane. Web and documentation edits never enter this stage, while
+# registry and target caches keep Rust changes incremental across remote builds.
 FROM rust:1.96-bookworm AS build
 
 WORKDIR /src
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
 
-RUN cargo build --release -p devsite-server
+RUN --mount=type=cache,id=devsite-cargo-registry,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,id=devsite-cargo-git,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,id=devsite-cargo-target,target=/src/target,sharing=locked \
+    cargo build --release --locked -p devsite-server \
+ && install -Dm755 target/release/devsite-server /out/devsite-server
 
 FROM debian:bookworm-slim
 
@@ -42,7 +53,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
-COPY --from=build /src/target/release/devsite-server /usr/local/bin/devsite-server
+COPY --from=build /out/devsite-server /usr/local/bin/devsite-server
 COPY --from=web /out /app/web
 
 # Defaults for running in a container. Everything that differs per deployment —
