@@ -85,6 +85,16 @@ main:has(#private-only) :is(input, textarea, pre, code, [data-selectable], .erro
   user-select: text;
 }
 
+/* A profile is a directory of links and service controls. Its handle is the
+ * one text value people need to carry elsewhere when sharing with its owner. */
+#profile {
+  user-select: none;
+}
+
+#profile h1 {
+  user-select: text;
+}
+
 .brand {
   display: inline-flex;
   gap: calc(var(--pico-spacing) * 0.4);
