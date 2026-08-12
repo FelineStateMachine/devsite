@@ -19,9 +19,10 @@ macOS with [Homebrew](https://brew.sh):
 brew install FelineStateMachine/tap/devsite
 ```
 
-Linux binaries and other builds are attached to the
+Linux x86-64/ARM64, Windows x86-64, and Apple Silicon archives are attached to the
 [latest GitHub release](https://github.com/FelineStateMachine/devsite/releases/latest).
-The CLI is one binary; `devsite daemon run` is its long-running host mode.
+Each release includes SHA-256 checksums and GitHub build-provenance attestations. The CLI
+is one binary; `devsite daemon run` is its long-running host mode.
 
 ## Quick start
 
