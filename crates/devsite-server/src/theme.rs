@@ -94,6 +94,7 @@ const PROPERTIES: &[(&str, Kind)] = &[
     ("--pico-mark-background-color", Kind::Color),
     ("--pico-mark-color", Kind::Color),
     ("--pico-blockquote-border-color", Kind::Color),
+    ("--pico-accordion-active-summary-color", Kind::Color),
     ("--pico-accordion-open-summary-color", Kind::Color),
     // `ins` and `del` also colour the site's own confirmations and refusals.
     ("--pico-ins-color", Kind::Color),
@@ -593,6 +594,7 @@ mod tests {
             --pico-background-color: light-dark(#fefae0, #283618);
             --pico-color: light-dark(#283618, #fefae0);
             --pico-primary: light-dark(#bc6c25, #dda15e);
+            --pico-accordion-active-summary-color: light-dark(#606c38, #dda15e);
             --pico-accordion-open-summary-color: light-dark(#606c38, #dda15e);
             --pico-box-shadow: unset;
         ";
@@ -602,6 +604,7 @@ mod tests {
              --pico-background-color: light-dark(#fefae0, #283618);\n\
              --pico-color: light-dark(#283618, #fefae0);\n\
              --pico-primary: light-dark(#bc6c25, #dda15e);\n\
+             --pico-accordion-active-summary-color: light-dark(#606c38, #dda15e);\n\
              --pico-accordion-open-summary-color: light-dark(#606c38, #dda15e);\n\
              --pico-box-shadow: unset;\n"
         );
