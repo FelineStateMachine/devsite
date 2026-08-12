@@ -131,6 +131,13 @@ const MIGRATIONS: &[&str] = &[
          expires_at         INTEGER NOT NULL
      );
      CREATE INDEX tunnel_sessions_expiry ON tunnel_sessions(expires_at);",
+    // A browser-created machine secret is now an enrollment ticket, not the
+    // long-lived credential itself. Enrollment binds the row to the daemon's
+    // Ed25519 identity, rotates the hash, and records when that happened.
+    "ALTER TABLE machine_credentials ADD COLUMN endpoint_id TEXT;
+     ALTER TABLE machine_credentials ADD COLUMN enrolled_at INTEGER;
+     CREATE UNIQUE INDEX machine_credentials_endpoint
+         ON machine_credentials(endpoint_id) WHERE endpoint_id IS NOT NULL;",
 ];
 
 fn migrate(conn: &Connection) -> Result<()> {
@@ -172,6 +179,14 @@ pub struct MachineCredential {
     pub name: String,
     pub created_at: u64,
     pub last_used_at: Option<u64>,
+    pub endpoint_id: Option<String>,
+    pub enrolled_at: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MachineAuthentication {
+    pub account: Account,
+    pub endpoint_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -427,16 +442,21 @@ impl Db {
 
     /// Resolve an active machine credential. Last-used writes are coalesced to
     /// at most once per hour so ordinary CLI and daemon traffic stays read-mostly.
-    pub fn machine_account(&self, token_hash: &str, now: u64) -> Result<Option<Account>> {
-        let id: Option<String> = self
+    pub fn machine_authentication(
+        &self,
+        token_hash: &str,
+        now: u64,
+    ) -> Result<Option<MachineAuthentication>> {
+        let row: Option<(String, String)> = self
             .conn
             .query_row(
-                "SELECT account_id FROM machine_credentials WHERE token_hash = ?1",
+                "SELECT account_id, endpoint_id FROM machine_credentials
+                 WHERE token_hash = ?1 AND endpoint_id IS NOT NULL",
                 params![token_hash],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        let Some(id) = id else {
+        let Some((account_id, endpoint_id)) = row else {
             return Ok(None);
         };
 
@@ -446,12 +466,59 @@ impl Db {
                AND (last_used_at IS NULL OR last_used_at < ?3)",
             params![now as i64, token_hash, now.saturating_sub(60 * 60) as i64],
         )?;
-        self.account_by_id(AccountId::from_str(&id)?)
+        let account = self
+            .account_by_id(AccountId::from_str(&account_id)?)?
+            .context("machine credential refers to a missing account")?;
+        Ok(Some(MachineAuthentication {
+            account,
+            endpoint_id,
+        }))
+    }
+
+    /// Resolve an unconsumed enrollment ticket without making it a generally
+    /// usable account credential.
+    pub fn machine_enrollment(&self, token_hash: &str) -> Result<Option<(String, AccountId)>> {
+        self.conn
+            .query_row(
+                "SELECT id, account_id FROM machine_credentials
+                 WHERE token_hash = ?1 AND endpoint_id IS NULL",
+                params![token_hash],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .map(|(id, account)| Ok((id, AccountId::from_str(&account)?)))
+            .transpose()
+    }
+
+    /// Consume the bootstrap ticket by rotating its hash and permanently binding
+    /// this credential to one daemon public key.
+    pub fn enroll_machine(
+        &self,
+        credential_id: &str,
+        account: AccountId,
+        old_token_hash: &str,
+        new_token_hash: &str,
+        endpoint_id: &str,
+        now: u64,
+    ) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE machine_credentials
+             SET token_hash = ?1, endpoint_id = ?2, enrolled_at = ?3, last_used_at = ?3
+             WHERE id = ?4 AND account_id = ?5 AND token_hash = ?6 AND endpoint_id IS NULL",
+            params![
+                new_token_hash,
+                endpoint_id,
+                now as i64,
+                credential_id,
+                account.to_string(),
+                old_token_hash
+            ],
+        )? > 0)
     }
 
     pub fn machine_credentials(&self, account: AccountId) -> Result<Vec<MachineCredential>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, created_at, last_used_at
+            "SELECT id, name, created_at, last_used_at, endpoint_id, enrolled_at
              FROM machine_credentials WHERE account_id = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt
@@ -461,6 +528,8 @@ impl Db {
                     name: row.get(1)?,
                     created_at: row.get::<_, i64>(2)? as u64,
                     last_used_at: row.get::<_, Option<i64>>(3)?.map(|n| n as u64),
+                    endpoint_id: row.get(4)?,
+                    enrolled_at: row.get::<_, Option<i64>>(5)?.map(|n| n as u64),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -484,6 +553,16 @@ impl Db {
         id: &str,
         _now: u64,
     ) -> Result<bool> {
+        // If this credential owns the account's currently registered endpoint,
+        // stop issuing capabilities to it before removing the credential itself.
+        self.conn.execute(
+            "DELETE FROM daemons
+             WHERE account_id = ?1 AND endpoint_id = (
+                 SELECT endpoint_id FROM machine_credentials
+                 WHERE id = ?2 AND account_id = ?1
+             )",
+            params![account.to_string(), id],
+        )?;
         let changed = self.conn.execute(
             "DELETE FROM machine_credentials WHERE id = ?1 AND account_id = ?2",
             params![id, account.to_string()],
@@ -998,6 +1077,34 @@ impl Db {
             .optional()
             .map_err(Into::into)
     }
+
+    /// Current viewer/resource pairs for every service owned by this account.
+    /// Daemons refresh this bounded snapshot to revoke already-open streams.
+    pub fn service_authorizations(&self, owner: AccountId) -> Result<Vec<(AccountId, ResourceId)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.owner_id, r.id
+             FROM resources r
+             WHERE r.owner_id = ?1 AND r.kind = 'service'
+             UNION ALL
+             SELECT s.viewer_id, r.id
+             FROM resources r
+             JOIN shares s ON s.resource_id = r.id
+             WHERE r.owner_id = ?1 AND r.kind = 'service' AND r.visibility = 'shared'",
+        )?;
+        let rows = stmt
+            .query_map(params![owner.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(viewer, resource)| {
+                Ok((
+                    AccountId::from_str(&viewer)?,
+                    ResourceId::from_str(&resource)?,
+                ))
+            })
+            .collect()
+    }
 }
 
 fn row_to_resource(row: &rusqlite::Row<'_>) -> rusqlite::Result<Result<Resource>> {
@@ -1352,6 +1459,33 @@ mod tests {
     }
 
     #[test]
+    fn daemon_authorization_snapshot_tracks_share_revocation() {
+        let (mut db, alice, bob) = seeded();
+        let service = db
+            .create_resource(
+                alice.id,
+                "Agent",
+                ResourceKind::Service,
+                Visibility::Shared,
+                None,
+                None,
+                0,
+            )
+            .unwrap();
+        db.set_shares(service, &[bob.id]).unwrap();
+        assert!(db.accept_share(bob.id, service).unwrap());
+
+        let allowed = db.service_authorizations(alice.id).unwrap();
+        assert!(allowed.contains(&(alice.id, service)));
+        assert!(allowed.contains(&(bob.id, service)));
+
+        db.set_shares(service, &[]).unwrap();
+        let allowed = db.service_authorizations(alice.id).unwrap();
+        assert!(allowed.contains(&(alice.id, service)));
+        assert!(!allowed.contains(&(bob.id, service)));
+    }
+
+    #[test]
     fn owners_do_not_see_their_own_resources_as_shared_with_them() {
         let (mut db, alice, bob) = seeded();
         let agent = db
@@ -1632,25 +1766,62 @@ mod tests {
     }
 
     #[test]
-    fn machine_credentials_are_named_resolvable_and_revocable() {
+    fn machine_tickets_enroll_once_and_become_endpoint_bound_credentials() {
         let (db, alice, _) = seeded();
-        db.create_machine_credential("machine_one", alice.id, "Laptop", "hash", 10)
+        db.create_machine_credential("machine_one", alice.id, "Laptop", "ticket-hash", 10)
             .unwrap();
 
         assert_eq!(db.active_machine_credential_count(alice.id).unwrap(), 1);
+        assert!(db
+            .machine_authentication("ticket-hash", 20)
+            .unwrap()
+            .is_none());
         assert_eq!(
-            db.machine_account("hash", 20).unwrap().unwrap().id,
-            alice.id
+            db.machine_enrollment("ticket-hash").unwrap(),
+            Some(("machine_one".to_string(), alice.id))
         );
+        assert!(db
+            .enroll_machine(
+                "machine_one",
+                alice.id,
+                "ticket-hash",
+                "credential-hash",
+                "endpoint",
+                20,
+            )
+            .unwrap());
+        assert!(!db
+            .enroll_machine(
+                "machine_one",
+                alice.id,
+                "ticket-hash",
+                "other-hash",
+                "attacker",
+                21,
+            )
+            .unwrap());
+        let authenticated = db
+            .machine_authentication("credential-hash", 30)
+            .unwrap()
+            .unwrap();
+        assert_eq!(authenticated.account.id, alice.id);
+        assert_eq!(authenticated.endpoint_id, "endpoint");
         let credentials = db.machine_credentials(alice.id).unwrap();
         assert_eq!(credentials.len(), 1);
         assert_eq!(credentials[0].name, "Laptop");
+        assert_eq!(credentials[0].endpoint_id.as_deref(), Some("endpoint"));
+        assert_eq!(credentials[0].enrolled_at, Some(20));
         assert_eq!(credentials[0].last_used_at, Some(20));
+        db.register_daemon(alice.id, "endpoint").unwrap();
 
         assert!(db
             .revoke_machine_credential(alice.id, "machine_one", 30)
             .unwrap());
-        assert!(db.machine_account("hash", 40).unwrap().is_none());
+        assert!(db.daemon_endpoint(alice.id).unwrap().is_none());
+        assert!(db
+            .machine_authentication("credential-hash", 40)
+            .unwrap()
+            .is_none());
         assert_eq!(db.active_machine_credential_count(alice.id).unwrap(), 0);
         assert!(db.machine_credentials(alice.id).unwrap().is_empty());
     }

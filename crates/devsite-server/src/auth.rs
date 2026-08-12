@@ -157,6 +157,12 @@ pub fn generate_machine_token() -> String {
     format!("dsm_{}", generate_session_token())
 }
 
+/// One-use plaintext bootstrap material. Enrollment consumes it and returns
+/// the endpoint-bound machine credential.
+pub fn generate_machine_ticket() -> String {
+    format!("dmt_{}", generate_session_token())
+}
+
 pub fn generate_machine_credential_id() -> String {
     let mut bytes = [0u8; 16];
     getrandom_fill(&mut bytes);
@@ -233,6 +239,7 @@ mod tests {
         );
         assert_eq!(hash_token(&a), hash_token(&a));
         assert!(generate_machine_token().starts_with("dsm_"));
+        assert!(generate_machine_ticket().starts_with("dmt_"));
     }
 
     #[test]

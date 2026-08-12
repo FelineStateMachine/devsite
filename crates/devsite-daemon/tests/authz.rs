@@ -225,6 +225,7 @@ async fn authorization_matrix() {
     capabilities_that_fail_verification_are_refused(&h).await;
     a_capability_cannot_be_redeemed_twice(&h).await;
     denials_reveal_nothing_about_why(&h).await;
+    revoking_an_active_pair_closes_its_stream(&h).await;
 }
 
 async fn valid_capability_opens_a_stream(h: &Harness) {
@@ -337,6 +338,30 @@ async fn denials_reveal_nothing_about_why(h: &Harness) {
         forged.to_string(),
         "denial messages must be indistinguishable"
     );
+}
+
+async fn revoking_an_active_pair_closes_its_stream(h: &Harness) {
+    let addr = EndpointAddr::from(h.daemon.endpoint().id()).with_relay_url(h.relay.clone());
+    let ServiceStream { mut send, mut recv } = h
+        .client
+        .connect(addr, h.valid(h.agent))
+        .await
+        .expect("the stream should open before revocation");
+    send.write_all(b"held-open").await.unwrap();
+
+    let revoked = h
+        .daemon
+        .replace_authorizations(std::collections::HashSet::new())
+        .await;
+    assert_eq!(
+        revoked, 1,
+        "the active stream should be selected for revocation"
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), recv.read_to_end(1024))
+        .await
+        .expect("the revoked stream should close promptly")
+        .ok();
 }
 
 #[test]

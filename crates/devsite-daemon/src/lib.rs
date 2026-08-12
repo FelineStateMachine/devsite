@@ -7,19 +7,21 @@
 pub mod config;
 pub mod verify;
 
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use devsite_proto::capability::KeyBytes;
 use devsite_proto::wire::{self, ErrorCode, Request, Response};
-use devsite_proto::ALPN;
+use devsite_proto::{AccountId, ResourceId, ALPN};
 use ed25519_dalek::VerifyingKey;
 use iroh::endpoint::Connection;
 use iroh::{Endpoint, SecretKey};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{oneshot, Mutex, RwLock};
 
 use crate::config::{DaemonConfig, HostedService};
 use crate::verify::{Denied, ReplayGuard};
@@ -36,6 +38,14 @@ pub struct Daemon {
     config: RwLock<DaemonConfig>,
     control_plane_key: VerifyingKey,
     replay: Arc<Mutex<ReplayGuard>>,
+    active: Mutex<HashMap<u64, ActiveStream>>,
+    next_stream_id: AtomicU64,
+}
+
+struct ActiveStream {
+    viewer: AccountId,
+    resource: ResourceId,
+    cancel: oneshot::Sender<()>,
 }
 
 impl Daemon {
@@ -59,6 +69,8 @@ impl Daemon {
             config: RwLock::new(config),
             control_plane_key,
             replay: Arc::new(Mutex::new(ReplayGuard::default())),
+            active: Mutex::new(HashMap::new()),
+            next_stream_id: AtomicU64::new(1),
         })
     }
 
@@ -81,12 +93,47 @@ impl Daemon {
     /// open connections. This is intentionally platform-neutral: service
     /// managers only need to keep `devsite daemon run` alive.
     pub async fn replace_resources(&self, resources: Vec<HostedService>) -> bool {
-        let mut config = self.config.write().await;
-        if config.resources == resources {
-            return false;
+        let allowed = resources
+            .iter()
+            .map(|resource| resource.resource_id)
+            .collect::<HashSet<_>>();
+        {
+            let mut config = self.config.write().await;
+            if config.resources == resources {
+                return false;
+            }
+            config.resources = resources;
         }
-        config.resources = resources;
+        self.cancel_where(|stream| !allowed.contains(&stream.resource))
+            .await;
         true
+    }
+
+    /// Replace the control plane's current authorization snapshot and terminate
+    /// streams whose viewer/resource pair has since been revoked.
+    pub async fn replace_authorizations(&self, allowed: HashSet<(AccountId, ResourceId)>) -> usize {
+        self.cancel_where(|stream| !allowed.contains(&(stream.viewer, stream.resource)))
+            .await
+    }
+
+    /// Fail closed after the control plane authorization lease has gone stale.
+    pub async fn revoke_all_active(&self) -> usize {
+        self.cancel_where(|_| true).await
+    }
+
+    async fn cancel_where(&self, denied: impl Fn(&ActiveStream) -> bool) -> usize {
+        let mut active = self.active.lock().await;
+        let ids = active
+            .iter()
+            .filter_map(|(id, stream)| denied(stream).then_some(*id))
+            .collect::<Vec<_>>();
+        let count = ids.len();
+        for id in ids {
+            if let Some(stream) = active.remove(&id) {
+                let _ = stream.cancel.send(());
+            }
+        }
+        count
     }
 
     /// Accept connections until the endpoint closes.
@@ -231,6 +278,17 @@ impl Daemon {
             .await
             .context("writing connect response")?;
 
+        let stream_id = self.next_stream_id.fetch_add(1, Ordering::Relaxed);
+        let (cancel, mut cancelled) = oneshot::channel();
+        self.active.lock().await.insert(
+            stream_id,
+            ActiveStream {
+                viewer: authorized.claims.viewer,
+                resource: authorized.claims.resource,
+                cancel,
+            },
+        );
+
         let (mut upstream_read, mut upstream_write) = upstream.into_split();
         let client_to_service = async {
             copy(&mut recv, &mut upstream_write)
@@ -246,8 +304,14 @@ impl Daemon {
             send.finish().context("finishing service stream")?;
             Ok::<_, anyhow::Error>(())
         };
-        tokio::try_join!(client_to_service, service_to_client)?;
-        Ok(())
+        let result = tokio::select! {
+            result = async { tokio::try_join!(client_to_service, service_to_client) } => {
+                result.map(|_| ())
+            }
+            _ = &mut cancelled => Ok(()),
+        };
+        self.active.lock().await.remove(&stream_id);
+        result
     }
 }
 

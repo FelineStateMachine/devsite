@@ -25,5 +25,5 @@ recovery suggestions suitable for either display or direct agent consumption.
 one JSON value per line so consumers can process lifecycle events as NDJSON. Human logs and
 transport warnings remain on stderr and never contaminate JSON stdout.
 
-JSON mode is non-interactive. In particular, `devsite login --json` requires its token as an
+JSON mode is non-interactive. In particular, `devsite login --json` requires its ticket as an
 argument rather than prompting on stdin.

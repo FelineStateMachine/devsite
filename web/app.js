@@ -591,8 +591,8 @@ function renderSignedOut() {
       <p>Store useful URLs, shared services, and temporary access</p>
       <article>
         <h3>Machine Enrollment</h3>
-        <pre><code>devsite login dsm_***</code></pre>
-        <blockquote>Use a revocable machine credential from your dashboard</blockquote>
+        <pre><code>devsite login dmt_***</code></pre>
+        <blockquote>A single-use ticket creates a revocable, identity-bound machine credential</blockquote>
       </article>
       <article>
         <h3>Add Links to your site</h3>
@@ -863,7 +863,7 @@ async function showDashboard(newCredential = null) {
     <article>
       <details${newCredential ? ' open' : ''}>
         <summary><strong>Machine credentials</strong></summary>
-        <p>Each credential remains valid until you revoke it. Its secret is shown once.</p>
+        <p>Create a single-use ticket that enrolls one Ed25519 machine identity.</p>
         <form id="credential-form">
           <fieldset role="group">
             <input id="credential-name" name="name" maxlength="60"
@@ -916,7 +916,7 @@ async function showDashboard(newCredential = null) {
     renderSecretCommand(
       $('new-machine-token').querySelector('.secret-command-slot'),
       'login',
-      newCredential.token,
+      newCredential.ticket,
     );
   }
 
@@ -951,7 +951,7 @@ async function showDashboard(newCredential = null) {
         method: 'POST',
         body: JSON.stringify({ name: $('credential-name').value }),
       });
-      await showDashboard({ name: created.credential.name, token: created.token });
+      await showDashboard({ name: created.credential.name, ticket: created.ticket });
     } catch (err) {
       button.removeAttribute('aria-busy');
       note.innerHTML = `<span class="error">${esc(err.message)}</span>`;

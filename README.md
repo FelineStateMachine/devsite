@@ -24,11 +24,11 @@ is one binary; `devsite daemon run` is its long-running host mode.
 
 ## Quick start
 
-Sign in at [dev.site](https://dev.site), create a machine credential on the dashboard, and
-use the one-time value to log in:
+Sign in at [dev.site](https://dev.site), create a single-use machine ticket on the dashboard,
+and use it to bind this machine's Ed25519 identity:
 
 ```bash
-devsite login dsm_...
+devsite login dmt_...
 ```
 
 Host a named local service and keep the daemon running:
@@ -156,10 +156,11 @@ Native Linux packages may install `packaging/systemd/devsite.service` as a user 
 systemctl --user enable --now devsite.service
 ```
 
-The endpoint identity persists in the devsite config directory. The daemon registers that
-public endpoint id with the control plane once at startup, publishes its address through
-Iroh, and reloads service targets from the local config every two seconds. Adding or
-removing a service does not require restarting it.
+The endpoint identity persists in the devsite config directory, with its Ed25519 public key
+written to `identity.pub`. The daemon registers that public endpoint id with the control
+plane once at startup, publishes its address through Iroh, and reloads service targets and
+authorizations every two seconds. Adding or removing a service does not require restarting
+it.
 
 `devsite daemon status` reports whether this config directory has a live daemon. The same
 liveness appears in `devsite status` alongside the config location, pinned signing key, and
@@ -235,7 +236,7 @@ either is intentionally disruptive.
 - A peer supplies only a signed capability. It never supplies the daemon's target address.
 - `devsite service host PORT` always stores `127.0.0.1:PORT`; port zero is rejected.
 - `devsite connect` listens only on a loopback address.
-- Browser-minted tickets are short-lived, stored only as hashes, and consumed once.
+- Browser-minted connection tickets are short-lived, stored only as hashes, and consumed once.
   Redemption creates a client-key-bound session; its raw credential exists only in CLI
   memory, while the control plane stores its hash until expiry or disconnect.
 - Capabilities are bound to the authenticated Iroh client endpoint and cannot be replayed
@@ -247,8 +248,10 @@ either is intentionally disruptive.
   state are checked whenever a new capability is requested.
 - The control plane rate-limits capability issuance and bounds profiles, names, links,
   folders, credentials, and share lists.
+- Plaintext machine enrollment tickets are consumed once. Enrollment binds the resulting
+  machine credential to the machine's Ed25519 endpoint identity.
 - Machine credentials and browser sessions are stored only as SHA-256 hashes and can be
-  revoked from the dashboard.
+  revoked from the dashboard. Revocation also closes affected active service streams.
 
 ## License
 

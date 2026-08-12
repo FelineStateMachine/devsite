@@ -7,10 +7,12 @@ use clap::{error::ErrorKind, Parser, Subcommand};
 use devsite_client::{ClientEndpoint, ServiceStream};
 use devsite_daemon::config::{DaemonConfig, HostedService, Paths, Visibility};
 use devsite_daemon::Daemon;
-use devsite_proto::SignedCapability;
+use devsite_proto::{AccountId, ResourceId, SignedCapability};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::io::{copy, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -21,7 +23,7 @@ use crate::client::ControlPlane;
     name = "devsite",
     version,
     about = "Share public work and reach your local services",
-    after_help = "Typical workflows:\n  devsite login dsm_...\n  devsite link set --name docs --url https://example.com --public\n  devsite service host 3000 --name app\n  devsite connect dst_...\n\nUse `devsite <command> --help` for command-specific arguments."
+    after_help = "Typical workflows:\n  devsite login dmt_...\n  devsite link set --name docs --url https://example.com --public\n  devsite service host 3000 --name app\n  devsite connect dst_...\n\nUse `devsite <command> --help` for command-specific arguments."
 )]
 struct Cli {
     /// Control plane base URL.
@@ -45,7 +47,7 @@ struct Cli {
 enum Command {
     /// Store a revocable machine credential and pin the control plane's signing key.
     Login {
-        /// Machine credential created on the signed-in dashboard.
+        /// Single-use machine enrollment ticket created on the signed-in dashboard.
         token: Option<String>,
     },
     /// Manage ordinary external links.
@@ -223,7 +225,7 @@ fn runtime_suggestions(command: &str, err: &anyhow::Error) -> Vec<String> {
     let message = format!("{err:#}");
     if message.contains("not signed in") || message.contains("run `devsite login` first") {
         suggestions.push(
-            "Create a machine credential on dev.site, then run `devsite login TOKEN`.".to_string(),
+            "Create a machine ticket on dev.site, then run `devsite login TICKET`.".to_string(),
         );
     }
     suggestions.push(help_suggestion(Some(command)));
@@ -274,6 +276,23 @@ struct RedeemTicketResponse {
     resource_id: String,
     name: String,
     expires_at: u64,
+}
+
+#[derive(Deserialize)]
+struct EnrollMachineResponse {
+    machine_credential: String,
+    endpoint_id: String,
+}
+
+#[derive(Deserialize)]
+struct AuthorizationListing {
+    authorizations: Vec<ServiceAuthorization>,
+}
+
+#[derive(Deserialize)]
+struct ServiceAuthorization {
+    viewer_id: String,
+    resource_id: String,
 }
 
 #[derive(Deserialize)]
@@ -448,30 +467,16 @@ async fn run(cli: Cli, output: Output) -> Result<()> {
             public,
             share,
             folder,
-        }) => {
-            set_link(
-                &paths,
-                &cli.server,
-                &name,
-                &url,
-                public,
-                share,
-                folder,
-                output,
-            )
-            .await
-        }
-        Command::Link(LinkCommand::Remove { name }) => {
-            remove_link(&paths, &cli.server, &name, output).await
-        }
+        }) => set_link(&paths, &name, &url, public, share, folder, output).await,
+        Command::Link(LinkCommand::Remove { name }) => remove_link(&paths, &name, output).await,
         Command::Service(ServiceCommand::Host {
             port,
             name,
             share,
             folder,
-        }) => host_service(&paths, &cli.server, port, name, share, folder, output).await,
+        }) => host_service(&paths, port, name, share, folder, output).await,
         Command::Service(ServiceCommand::Remove { name }) => {
-            remove_service(&paths, &cli.server, &name, output).await
+            remove_service(&paths, &name, output).await
         }
         Command::Connect { ticket, listen } => connect(&cli.server, &ticket, listen, output).await,
         Command::Theme(command) => theme(&paths, &cli.server, command, output).await,
@@ -489,13 +494,20 @@ fn load_authenticated(paths: &Paths) -> Result<DaemonConfig> {
     Ok(config)
 }
 
+fn enrolled_server(config: &DaemonConfig) -> Result<&str> {
+    config
+        .server_url
+        .as_deref()
+        .context("this credential is not bound to a control-plane origin — log in again")
+}
+
 async fn login(paths: &Paths, server: &str, token: Option<String>, output: Output) -> Result<()> {
-    let token = match token {
-        Some(token) => token,
+    let ticket = match token {
+        Some(ticket) => ticket,
         None if output.json => bail!("TOKEN is required with --json"),
         None => {
-            println!("Open {server}, create a machine credential, and paste it here.");
-            print!("token: ");
+            println!("Open {server}, create a machine ticket, and paste it here.");
+            print!("ticket: ");
             use std::io::Write;
             std::io::stdout().flush()?;
             let mut line = String::new();
@@ -503,29 +515,46 @@ async fn login(paths: &Paths, server: &str, token: Option<String>, output: Outpu
             line.trim().to_string()
         }
     };
-    if token.is_empty() {
-        bail!("no token provided");
+    if ticket.is_empty() {
+        bail!("no ticket provided");
     }
 
-    let api = ControlPlane::new(server, Some(token.clone()));
-    let server_config: PublicConfig = api.get("/api/config").await?;
-    if server_config.api_version != 2 {
+    let bootstrap = ControlPlane::new(server, None);
+    let server_config: PublicConfig = bootstrap.get("/api/config").await?;
+    if server_config.api_version != 3 {
         bail!(
-            "this CLI speaks API version 2, but the server reports version {}",
+            "this CLI speaks API version 3, but the server reports version {}",
             server_config.api_version
         );
     }
-    // Confirm the credential works before storing it, so a typo fails here
-    // rather than at the first API call.
+    let pubkey: PubKeyResponse = bootstrap.get("/api/pubkey").await?;
+    let identity = paths.load_or_create_identity()?;
+    let endpoint_id = identity.public().to_string();
+    let enrollment = ControlPlane::new(server, Some(ticket));
+    let enrolled: EnrollMachineResponse = enrollment
+        .put(
+            "/api/machine/enroll",
+            &serde_json::json!({
+                "endpoint_id": endpoint_id,
+                "proof": endpoint_proof(&identity),
+            }),
+        )
+        .await
+        .context("enrolling this machine ticket")?;
+    if enrolled.endpoint_id != endpoint_id {
+        bail!("the server enrolled a different endpoint identity");
+    }
+
+    // Confirm the rotated credential works before storing it.
+    let api = ControlPlane::new(server, Some(enrolled.machine_credential.clone()));
     let me: serde_json::Value = api
         .get("/api/me")
         .await
-        .context("that token was not accepted")?;
-    let pubkey: PubKeyResponse = api.get("/api/pubkey").await?;
+        .context("the enrolled machine credential was not accepted")?;
 
     let mut config = paths.load_config()?;
     config.server_url = Some(server.trim_end_matches('/').to_string());
-    config.machine_credential = Some(token);
+    config.machine_credential = Some(enrolled.machine_credential);
     // Pinned now, and every capability is checked against it from here on.
     config.control_plane_key = Some(pubkey.public_key);
     paths.save_config(&config)?;
@@ -556,10 +585,15 @@ async fn login(paths: &Paths, server: &str, token: Option<String>, output: Outpu
     Ok(())
 }
 
+fn endpoint_proof(secret: &iroh::SecretKey) -> String {
+    let endpoint = *secret.public().as_bytes();
+    let signature = secret.sign(&devsite_proto::machine_endpoint_proof_message(&endpoint));
+    data_encoding::BASE64URL_NOPAD.encode(&signature.to_bytes())
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn set_link(
     paths: &Paths,
-    server: &str,
     name: &str,
     url: &str,
     public: bool,
@@ -576,6 +610,7 @@ async fn set_link(
     };
     let share = normalized_handles(&share);
     let config = load_authenticated(paths)?;
+    let server = enrolled_server(&config)?;
     let api = ControlPlane::new(server, config.machine_credential.clone());
     let update = warn_on_upsert(
         &api,
@@ -636,8 +671,9 @@ async fn set_link(
 /// everything by id, and an endpoint that deleted by name would have to invent a
 /// rule for a link and a service sharing one. Listing first also means the "no
 /// such thing" case is answered with the names that do exist.
-async fn remove_resource(paths: &Paths, server: &str, name: &str, kind: &str) -> Result<Resource> {
+async fn remove_resource(paths: &Paths, name: &str, kind: &str) -> Result<Resource> {
     let config = load_authenticated(paths)?;
+    let server = enrolled_server(&config)?;
     let api = ControlPlane::new(server, config.machine_credential.clone());
 
     let listing: ResourceListing = api.get("/api/resources").await?;
@@ -654,8 +690,8 @@ async fn remove_resource(paths: &Paths, server: &str, name: &str, kind: &str) ->
     Ok(resource)
 }
 
-async fn remove_link(paths: &Paths, server: &str, name: &str, output: Output) -> Result<()> {
-    let removed = remove_resource(paths, server, name, "link").await?;
+async fn remove_link(paths: &Paths, name: &str, output: Output) -> Result<()> {
+    let removed = remove_resource(paths, name, "link").await?;
     let url = removed.url.unwrap_or_default();
     if output.json {
         output.success(
@@ -674,8 +710,8 @@ async fn remove_link(paths: &Paths, server: &str, name: &str, output: Output) ->
 /// machine does. A daemon that kept serving a resource the control plane has
 /// deleted is harmless — no capability can be issued for it any more — but a
 /// config that still lists it would re-register the name the next time it is hosted.
-async fn remove_service(paths: &Paths, server: &str, name: &str, output: Output) -> Result<()> {
-    let removed = remove_resource(paths, server, name, "service").await?;
+async fn remove_service(paths: &Paths, name: &str, output: Output) -> Result<()> {
+    let removed = remove_resource(paths, name, "service").await?;
 
     let mut config = paths.load_config()?;
     let before = config.resources.len();
@@ -705,7 +741,6 @@ async fn remove_service(paths: &Paths, server: &str, name: &str, output: Output)
 
 async fn host_service(
     paths: &Paths,
-    server: &str,
     port: u16,
     name: Option<String>,
     share: Vec<String>,
@@ -726,6 +761,7 @@ async fn host_service(
     let share = normalized_handles(&share);
 
     let config = load_authenticated(paths)?;
+    let server = enrolled_server(&config)?;
     let api = ControlPlane::new(server, config.machine_credential.clone());
     let update = warn_on_upsert(
         &api,
@@ -927,6 +963,7 @@ async fn theme(paths: &Paths, server: &str, command: ThemeCommand, output: Outpu
     }
 
     let config = load_authenticated(paths)?;
+    let server = enrolled_server(&config)?;
     let api = ControlPlane::new(server, config.machine_credential.clone());
 
     match command {
@@ -1249,6 +1286,7 @@ async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
     let token = config.machine_credential.clone();
 
     let secret_key = paths.load_or_create_identity()?;
+    let proof = endpoint_proof(&secret_key);
     let daemon = Arc::new(Daemon::bind(secret_key, config).await?);
 
     let endpoint_id = daemon.endpoint().id().to_string();
@@ -1269,12 +1307,9 @@ async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
     // clients resolve it from there. The control plane holds permissions; it is
     // not a directory service.
     let api = ControlPlane::new(&server_url, token);
-    api.put_empty(
-        "/api/daemon",
-        &serde_json::json!({ "endpoint_id": endpoint_id }),
-    )
-    .await
-    .context("registering this daemon with the control plane")?;
+    api.put_empty("/api/daemon", &serde_json::json!({ "proof": proof }))
+        .await
+        .context("registering this daemon with the control plane")?;
 
     if output.json {
         output.event(
@@ -1291,9 +1326,11 @@ async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
     let reload_paths = Paths {
         root: paths.root.clone(),
     };
+    let authorization_api = api.clone();
     tokio::select! {
         result = Arc::clone(&daemon).serve() => result?,
         result = reload_config(reload_paths, Arc::clone(&daemon), output) => result?,
+        result = sync_authorizations(authorization_api, Arc::clone(&daemon)) => result?,
         _ = tokio::signal::ctrl_c() => {
             if output.json {
                 output.event("daemon.run", "shutdown", serde_json::json!({}));
@@ -1304,6 +1341,56 @@ async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
     }
     daemon.close().await;
     Ok(())
+}
+
+async fn sync_authorizations(api: ControlPlane, daemon: Arc<Daemon>) -> Result<()> {
+    const REFRESH: Duration = Duration::from_secs(2);
+    const STALE_LEASE: Duration = Duration::from_secs(15);
+
+    let mut interval = tokio::time::interval(REFRESH);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_success = Instant::now();
+    let mut failed_closed = false;
+
+    loop {
+        interval.tick().await;
+        match api
+            .get::<AuthorizationListing>("/api/daemon/authorizations")
+            .await
+        {
+            Ok(listing) => {
+                let allowed = listing
+                    .authorizations
+                    .into_iter()
+                    .map(|entry| {
+                        Ok((
+                            entry.viewer_id.parse::<AccountId>()?,
+                            entry.resource_id.parse::<ResourceId>()?,
+                        ))
+                    })
+                    .collect::<Result<HashSet<_>>>()?;
+                let revoked = daemon.replace_authorizations(allowed).await;
+                if revoked > 0 {
+                    tracing::info!(revoked, "closed streams whose authorization was revoked");
+                }
+                last_success = Instant::now();
+                failed_closed = false;
+            }
+            Err(err) => {
+                tracing::warn!("could not refresh active-stream authorizations: {err:#}");
+                if last_success.elapsed() >= STALE_LEASE {
+                    let revoked = daemon.revoke_all_active().await;
+                    if !failed_closed || revoked > 0 {
+                        tracing::warn!(
+                            revoked,
+                            "authorization lease expired; closed active streams"
+                        );
+                    }
+                    failed_closed = true;
+                }
+            }
+        }
+    }
 }
 
 async fn reload_config(paths: Paths, daemon: Arc<Daemon>, output: Output) -> Result<()> {

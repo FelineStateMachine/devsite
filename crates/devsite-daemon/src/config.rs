@@ -37,9 +37,8 @@ pub struct DaemonConfig {
     /// Base URL of the control plane, e.g. `https://dev.site`.
     pub server_url: Option<String>,
     /// Revocable machine credential from `devsite login`, used for CLI calls and
-    /// for registering this daemon's endpoint id when it starts. The alias reads
-    /// configs written before machine credentials were introduced.
-    #[serde(default, alias = "session_token")]
+    /// for registering this daemon's endpoint id when it starts.
+    #[serde(default)]
     pub machine_credential: Option<String>,
     /// The control plane's capability-signing public key, pinned at login.
     ///
@@ -107,6 +106,12 @@ impl Paths {
         self.root.join("identity.key")
     }
 
+    /// Public half of [`Self::identity`]. Public Ed25519 material follows the
+    /// conventional `.pub` naming used by the rest of the CLI handoff files.
+    pub fn identity_public(&self) -> PathBuf {
+        self.root.join("identity.pub")
+    }
+
     pub fn config(&self) -> PathBuf {
         self.root.join("config.json")
     }
@@ -162,19 +167,27 @@ impl Paths {
     /// audience — so it must survive restarts and must not be world-readable.
     pub fn load_or_create_identity(&self) -> Result<SecretKey> {
         let path = self.identity();
-        if path.exists() {
+        let key = if path.exists() {
             let raw =
                 std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
             let bytes: [u8; 32] = raw
                 .as_slice()
                 .try_into()
                 .map_err(|_| anyhow::anyhow!("{} is not a 32 byte key", path.display()))?;
-            return Ok(SecretKey::from_bytes(&bytes));
-        }
+            SecretKey::from_bytes(&bytes)
+        } else {
+            std::fs::create_dir_all(&self.root)?;
+            let key = SecretKey::generate();
+            write_private(&path, &key.to_bytes())?;
+            key
+        };
 
-        std::fs::create_dir_all(&self.root)?;
-        let key = SecretKey::generate();
-        write_private(&path, &key.to_bytes())?;
+        let public = format!("{}\n", key.public());
+        let public_path = self.identity_public();
+        if std::fs::read_to_string(&public_path).ok().as_deref() != Some(public.as_str()) {
+            std::fs::write(&public_path, public.as_bytes())
+                .with_context(|| format!("writing {}", public_path.display()))?;
+        }
         Ok(key)
     }
 }
@@ -249,15 +262,6 @@ mod tests {
     }
 
     #[test]
-    fn reads_pre_machine_credential_configs() {
-        let config: DaemonConfig = serde_json::from_str(
-            r#"{"session_token":"old-token","control_plane_key":null,"resources":[]}"#,
-        )
-        .unwrap();
-        assert_eq!(config.machine_credential.as_deref(), Some("old-token"));
-    }
-
-    #[test]
     fn daemon_lock_reports_only_a_live_holder() {
         let paths = test_paths();
         assert!(!paths.daemon_running().unwrap());
@@ -268,6 +272,19 @@ mod tests {
 
         drop(lock);
         assert!(!paths.daemon_running().unwrap());
+        std::fs::remove_dir_all(&paths.root).unwrap();
+    }
+
+    #[test]
+    fn identity_writes_its_public_half_as_a_pub_file() {
+        let paths = test_paths();
+        let key = paths.load_or_create_identity().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(paths.identity_public()).unwrap(),
+            format!("{}\n", key.public())
+        );
+
         std::fs::remove_dir_all(&paths.root).unwrap();
     }
 }

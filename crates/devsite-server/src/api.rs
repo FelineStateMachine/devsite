@@ -16,7 +16,7 @@ use devsite_proto::{AccountId, ResourceId};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::{self, ShooVerifier};
-use crate::db::{Db, ResourceKind, ShareStatus};
+use crate::db::{Db, MachineAuthentication, ResourceKind, ShareStatus};
 use crate::issuer::Issuer;
 use crate::policy::{can_view, Visibility};
 use crate::theme;
@@ -142,8 +142,9 @@ fn current_account(state: &AppState, headers: &HeaderMap) -> ApiResult<Option<Ac
         // Browser sessions remain accepted as bearer tokens for local operator
         // workflows, but installed CLIs use independently revocable credentials.
         let account = db
-            .machine_account(&hash, now)
+            .machine_authentication(&hash, now)
             .map_err(ApiError::internal)?
+            .map(|machine| machine.account)
             .or(db.session_account(&hash, now).map_err(ApiError::internal)?);
         return Ok(account.map(|a| a.id));
     }
@@ -169,6 +170,17 @@ fn require_browser_account(state: &AppState, headers: &HeaderMap) -> ApiResult<A
     db.session_account(&auth::hash_token(&token), now_secs())
         .map_err(ApiError::internal)?
         .map(|account| account.id)
+        .ok_or_else(ApiError::unauthorized)
+}
+
+fn require_machine(state: &AppState, headers: &HeaderMap) -> ApiResult<MachineAuthentication> {
+    let token = bearer_token(headers).ok_or_else(ApiError::unauthorized)?;
+    state
+        .db
+        .lock()
+        .unwrap()
+        .machine_authentication(&auth::hash_token(&token), now_secs())
+        .map_err(ApiError::internal)?
         .ok_or_else(ApiError::unauthorized)
 }
 
@@ -247,7 +259,13 @@ pub struct CreateResourceResponse {
 
 #[derive(Deserialize)]
 pub struct RegisterDaemonRequest {
+    pub proof: String,
+}
+
+#[derive(Deserialize)]
+pub struct EnrollMachineRequest {
     pub endpoint_id: String,
+    pub proof: String,
 }
 
 #[derive(Deserialize)]
@@ -356,6 +374,8 @@ pub fn router(state: Shared) -> Router {
             delete(decline_share_invitation),
         )
         .route("/api/daemon", put(register_daemon))
+        .route("/api/daemon/authorizations", get(daemon_authorizations))
+        .route("/api/machine/enroll", put(enroll_machine))
         .route(
             "/api/profile/settings",
             get(profile_settings).put(set_profile_settings),
@@ -384,8 +404,8 @@ async fn config(State(state): State<Shared>) -> impl IntoResponse {
         "issuer": auth::ISSUER,
         "public_origin": state.public_origin,
         "redirect_uri": format!("{}/auth/callback", state.public_origin),
-        "api_version": 2,
-        "minimum_cli_version": "0.2.0",
+        "api_version": 3,
+        "minimum_cli_version": "0.3.0",
         "server_version": env!("CARGO_PKG_VERSION"),
         "daemon_protocol": String::from_utf8_lossy(devsite_proto::ALPN),
     }))
@@ -854,20 +874,102 @@ async fn register_daemon(
     headers: HeaderMap,
     Json(body): Json<RegisterDaemonRequest>,
 ) -> ApiResult<impl IntoResponse> {
-    let account = require_account(&state, &headers)?;
-    check_rate(&state, account, RateClass::Mutation)?;
-    // Validated before storing: a malformed id would be handed to browsers as
-    // something to go looking for, and fail somewhere much less obvious.
-    if parse_endpoint_id(&body.endpoint_id).is_none() {
-        return Err(ApiError::bad_request(
-            "endpoint_id is not a 32 byte hex key",
-        ));
-    }
+    let machine = require_machine(&state, &headers)?;
+    check_rate(&state, machine.account.id, RateClass::Mutation)?;
+    verify_endpoint_proof(&machine.endpoint_id, &body.proof)?;
 
     let db = state.db.lock().unwrap();
-    db.register_daemon(account, &body.endpoint_id)
+    db.register_daemon(machine.account.id, &machine.endpoint_id)
         .map_err(ApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn daemon_authorizations(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+) -> ApiResult<impl IntoResponse> {
+    let machine = require_machine(&state, &headers)?;
+    let pairs = state
+        .db
+        .lock()
+        .unwrap()
+        .service_authorizations(machine.account.id)
+        .map_err(ApiError::internal)?;
+    Ok(Json(serde_json::json!({
+        "authorizations": pairs.into_iter().map(|(viewer, resource)| serde_json::json!({
+            "viewer_id": viewer.to_string(),
+            "resource_id": resource.to_string(),
+        })).collect::<Vec<_>>()
+    })))
+}
+
+/// Consume a one-use browser ticket, bind it to the daemon's Ed25519 identity,
+/// and rotate it into the persistent machine credential stored by the CLI.
+async fn enroll_machine(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<EnrollMachineRequest>,
+) -> ApiResult<impl IntoResponse> {
+    let ticket = bearer_token(&headers).ok_or_else(ApiError::unauthorized)?;
+    if !valid_prefixed_token(&ticket, "dmt_") {
+        return Err(ApiError::unauthorized());
+    }
+    verify_endpoint_proof(&body.endpoint_id, &body.proof)?;
+
+    let now = now_secs();
+    let ticket_hash = auth::hash_token(&ticket);
+    let token = auth::generate_machine_token();
+    let token_hash = auth::hash_token(&token);
+    let (credential_id, account) = {
+        state
+            .db
+            .lock()
+            .unwrap()
+            .machine_enrollment(&ticket_hash)
+            .map_err(ApiError::internal)?
+            .ok_or_else(ApiError::unauthorized)?
+    };
+    check_rate(&state, account, RateClass::Credential)?;
+    if !state
+        .db
+        .lock()
+        .unwrap()
+        .enroll_machine(
+            &credential_id,
+            account,
+            &ticket_hash,
+            &token_hash,
+            &body.endpoint_id,
+            now,
+        )
+        .map_err(ApiError::internal)?
+    {
+        return Err(ApiError::unauthorized());
+    }
+
+    Ok(Json(serde_json::json!({
+        "machine_credential": token,
+        "endpoint_id": body.endpoint_id,
+    })))
+}
+
+fn verify_endpoint_proof(endpoint_id: &str, proof: &str) -> ApiResult<()> {
+    let endpoint = parse_endpoint_id(endpoint_id)
+        .ok_or_else(|| ApiError::bad_request("endpoint_id is not a 32 byte Ed25519 key"))?;
+    let signature = data_encoding::BASE64URL_NOPAD
+        .decode(proof.as_bytes())
+        .map_err(|_| ApiError::bad_request("endpoint proof is not base64url"))?;
+    let signature: [u8; 64] = signature
+        .try_into()
+        .map_err(|_| ApiError::bad_request("endpoint proof is not a 64 byte signature"))?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&endpoint)
+        .map_err(|_| ApiError::bad_request("endpoint_id is not a valid Ed25519 key"))?;
+    use ed25519_dalek::Verifier;
+    key.verify(
+        &devsite_proto::machine_endpoint_proof_message(&endpoint),
+        &ed25519_dalek::Signature::from_bytes(&signature),
+    )
+    .map_err(|_| ApiError::bad_request("endpoint proof did not verify"))
 }
 
 // -- dashboard ---------------------------------------------------------------
@@ -934,6 +1036,8 @@ async fn list_machine_credentials(
             "name": credential.name,
             "created_at": credential.created_at,
             "last_used_at": credential.last_used_at,
+            "endpoint_id": credential.endpoint_id,
+            "enrolled_at": credential.enrolled_at,
         })).collect::<Vec<_>>()
     })))
 }
@@ -946,7 +1050,7 @@ async fn create_machine_credential(
     let account = require_browser_account(&state, &headers)?;
     check_rate(&state, account, RateClass::Credential)?;
     let name = validate_machine_name(&body.name)?;
-    let token = auth::generate_machine_token();
+    let ticket = auth::generate_machine_ticket();
     let id = auth::generate_machine_credential_id();
     let now = now_secs();
 
@@ -960,7 +1064,7 @@ async fn create_machine_credential(
             "an account may have at most {MAX_MACHINE_CREDENTIALS} active machine credentials"
         )));
     }
-    db.create_machine_credential(&id, account, name, &auth::hash_token(&token), now)
+    db.create_machine_credential(&id, account, name, &auth::hash_token(&ticket), now)
         .map_err(ApiError::internal)?;
     Ok((
         StatusCode::CREATED,
@@ -971,7 +1075,7 @@ async fn create_machine_credential(
                 "created_at": now,
                 "last_used_at": null,
             },
-            "token": token,
+            "ticket": ticket,
         })),
     ))
 }
@@ -1415,6 +1519,23 @@ mod tests {
                 "{bad:?} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn endpoint_proof_requires_the_matching_private_key() {
+        use ed25519_dalek::{Signer, SigningKey};
+
+        let key = SigningKey::from_bytes(&[7; 32]);
+        let endpoint = key.verifying_key().to_bytes();
+        let endpoint_id = data_encoding::HEXLOWER.encode(&endpoint);
+        let signature = key.sign(&devsite_proto::machine_endpoint_proof_message(&endpoint));
+        let proof = data_encoding::BASE64URL_NOPAD.encode(&signature.to_bytes());
+        assert!(verify_endpoint_proof(&endpoint_id, &proof).is_ok());
+
+        let attacker = SigningKey::from_bytes(&[8; 32]);
+        let forged = attacker.sign(&devsite_proto::machine_endpoint_proof_message(&endpoint));
+        let forged = data_encoding::BASE64URL_NOPAD.encode(&forged.to_bytes());
+        assert!(verify_endpoint_proof(&endpoint_id, &forged).is_err());
     }
 
     #[test]
