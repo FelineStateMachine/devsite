@@ -95,6 +95,24 @@ main:has(#private-only) :is(input, textarea, pre, code, [data-selectable], .erro
   user-select: text;
 }
 
+/* Pico's chevron is a gray SVG data URI, so summary colour variables cannot
+ * reach it. Draw the same mark from currentColor and let open/closed summary
+ * colours apply to the text and disclosure indicator together. */
+details:not(.dropdown) > summary::after {
+  width: 0.55rem;
+  height: 0.55rem;
+  margin-top: 0.15rem;
+  margin-inline-end: 0.15rem;
+  background-image: none;
+  border-right: 0.12rem solid currentColor;
+  border-bottom: 0.12rem solid currentColor;
+  transform: rotate(-45deg);
+}
+
+details:not(.dropdown)[open] > summary::after {
+  transform: rotate(45deg);
+}
+
 .brand {
   display: inline-flex;
   gap: calc(var(--pico-spacing) * 0.4);
