@@ -468,8 +468,10 @@ async fn sign_out(State(state): State<Shared>, headers: HeaderMap) -> ApiResult<
     Ok((StatusCode::NO_CONTENT, [(header::SET_COOKIE, cookie)]).into_response())
 }
 
-async fn me(State(state): State<Shared>, headers: HeaderMap) -> ApiResult<impl IntoResponse> {
-    let id = require_account(&state, &headers)?;
+async fn me(State(state): State<Shared>, headers: HeaderMap) -> ApiResult<Response> {
+    let Some(id) = current_account(&state, &headers)? else {
+        return Ok(StatusCode::NO_CONTENT.into_response());
+    };
     let db = state.db.lock().unwrap();
     let account = db
         .account_by_id(id)
@@ -478,7 +480,8 @@ async fn me(State(state): State<Shared>, headers: HeaderMap) -> ApiResult<impl I
     Ok(Json(serde_json::json!({
         "account_id": account.id.to_string(),
         "handle": account.handle,
-    })))
+    }))
+    .into_response())
 }
 
 async fn claim_handle(

@@ -17,6 +17,7 @@ use anyhow::{Context, Result};
 use axum::http::{header, HeaderValue};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::get;
+use tower_http::compression::CompressionLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::set_header::SetResponseHeaderLayer;
 use tower_http::trace::TraceLayer;
@@ -131,6 +132,9 @@ async fn main() -> Result<()> {
         .route("/@{handle}", get(serve_index(index.clone())))
         .route("/auth/callback", get(serve_index(index.clone())))
         .fallback_service(static_assets(&config.web_root, &index))
+        // Fly also compresses at its edge today, but the origin should have the same
+        // contract when it is run directly or moved behind a different proxy.
+        .layer(CompressionLayer::new().br(true).gzip(true))
         .layer(TraceLayer::new_for_http());
 
     let listener = tokio::net::TcpListener::bind(&config.bind)
