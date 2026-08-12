@@ -453,13 +453,13 @@ function openService(item) {
 
 // -- setup views ---------------------------------------------------------------
 
-function renderSignedOut() {
-  setPageTitle('home');
-  clearTheme();
-  document.querySelector('.brand strong').hidden = true;
+function prefersHomebrewInstall() {
   const platform = navigator.userAgentData?.platform || navigator.platform || '';
-  const isMacOS = /mac/i.test(platform) || /Macintosh|Mac OS X/i.test(navigator.userAgent);
-  const installControl = isMacOS
+  return /mac/i.test(platform) || /Macintosh|Mac OS X/i.test(navigator.userAgent);
+}
+
+function installControlMarkup() {
+  return prefersHomebrewInstall()
     ? `<fieldset role="group">
         <input id="install-command" aria-label="Homebrew install command"
                value="brew install FelineStateMachine/tap/devsite" readonly>
@@ -471,6 +471,31 @@ function renderSignedOut() {
         <a href="https://github.com/FelineStateMachine/devsite/releases/latest"
            role="button">Download</a>
       </fieldset>`;
+}
+
+function bindInstallControl() {
+  const installCommand = $('install-command');
+  const copyInstall = $('copy-install');
+  if (!installCommand || !copyInstall) return;
+
+  let copyReset;
+  copyInstall.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(installCommand.value);
+      copyInstall.textContent = 'Copied';
+      clearTimeout(copyReset);
+      copyReset = setTimeout(() => { copyInstall.textContent = 'Copy'; }, 1400);
+    } catch {
+      copyInstall.textContent = 'Select';
+      installCommand.select();
+    }
+  });
+}
+
+function renderSignedOut() {
+  setPageTitle('home');
+  clearTheme();
+  document.querySelector('.brand strong').hidden = true;
   main.innerHTML = `
     <article>
       <hgroup>
@@ -504,7 +529,7 @@ function renderSignedOut() {
 
     <section aria-labelledby="install-title">
       <h2 id="install-title">Install</h2>
-      ${installControl}
+      ${installControlMarkup()}
     </section>
 
     <hr>
@@ -544,23 +569,7 @@ function renderSignedOut() {
                  target="_blank" rel="noopener">GitHub</a></li></ul>
     </nav>`;
   pageFooter.hidden = false;
-
-  if (isMacOS) {
-    const installCommand = $('install-command');
-    const copyInstall = $('copy-install');
-    let copyReset;
-    copyInstall.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(installCommand.value);
-        copyInstall.textContent = 'Copied';
-        clearTimeout(copyReset);
-        copyReset = setTimeout(() => { copyInstall.textContent = 'Copy'; }, 1400);
-      } catch {
-        copyInstall.textContent = 'Select';
-        installCommand.select();
-      }
-    });
-  }
+  bindInstallControl();
 }
 
 function renderClaimHandle() {
@@ -816,6 +825,11 @@ async function showDashboard(newCredential = null) {
       </details>
     </article>
 
+    <article aria-labelledby="install-title">
+      <header id="install-title">Install</header>
+      ${installControlMarkup()}
+    </article>
+
     <article>
       <header><strong>Session</strong></header>
       <button id="logout" type="button" class="secondary outline">Log out</button>
@@ -855,6 +869,7 @@ async function showDashboard(newCredential = null) {
   }
 
   $('logout').addEventListener('click', (event) => signOut(event.currentTarget));
+  bindInstallControl();
 
   $('private-only').addEventListener('change', async (event) => {
     const input = event.currentTarget;
