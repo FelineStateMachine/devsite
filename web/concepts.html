@@ -146,13 +146,11 @@
         mode <code>0600</code>. Its public half is written to
         <code>devsite-endpoint.pub</code>, registered with the control plane, and used as the
         daemon's Iroh endpoint id.</p>
-      <p>Before you upgrade to version 0.6.0, run <code>devsite login</code> or
-        <code>devsite daemon run</code> with an earlier version. That version moves
-        <code>identity.key</code> and <code>identity.pub</code> only from the dev.site config
-        directory. It does not scan the current directory, home directory, SSH directory, or
-        filesystem. It moves a legacy file only when its target file does not exist. Version
-        0.6.0 uses <code>devsite-endpoint.key</code> and
-        <code>devsite-endpoint.pub</code>. It does not read or move the legacy files.</p>
+      <p>Version 0.6.0 uses <code>devsite-endpoint.key</code> and
+        <code>devsite-endpoint.pub</code>. It does not read or move
+        <code>identity.key</code> or <code>identity.pub</code>. Start version 0.5.1 once
+        before the upgrade if these legacy files remain. Version 0.5.1 checks only the
+        dev.site config directory. It does not scan another directory or the filesystem.</p>
     </details>
 
     <details class="concept-detail">

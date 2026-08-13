@@ -76,8 +76,8 @@ fly certs show dev.site           # until it reports Ready
 fly deploy
 ```
 
-Fly builds the image remotely — there is no need for a local Docker daemon. The build runs
-`cargo build --release -p devsite-server` and copies the small static site into the image.
+Fly builds the image remotely. You do not need a local Docker daemon. The build checks and
+compiles the web source. It then builds the server and copies both outputs into the image.
 
 A deploy replaces the machine, which means a few seconds where the site is down. That is
 the cost of one volume, and it is the right trade at this size.

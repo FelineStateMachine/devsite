@@ -44,8 +44,9 @@ no `--pico-font-family` in the whitelist.
 
 ## The template
 
-Rendered by `web/app.js`. Profile declarations are only meaningful against this
-structure, so changes here and changes to the whitelist belong in the same commit.
+The control plane renders this structure for `GET /ui/profile/{handle}/stream`.
+SSEXi reads each HTML fragment, and Paxi morphs it into `<main>`. Profile declarations are
+only meaningful against this structure. Change the structure and whitelist together.
 
 ```html
 <body>
@@ -53,7 +54,8 @@ structure, so changes here and changes to the whitelist belong in the same commi
     <nav>…wordmark…<ul id="session">…</ul></nav>
   </header>
 
-  <main class="container" id="main">
+  <main class="container" id="main" data-profile-handle="alice"
+        data-profile-scheme="auto">
     <article id="profile">
       <hgroup>
         <h1>@alice</h1>
@@ -64,21 +66,22 @@ structure, so changes here and changes to the whitelist belong in the same commi
       <ul class="entries">
         <!-- reached at its own address, so it is an anchor and takes you away.
              The host is always present and folded into the arrow; see below. -->
-        <li class="entry" data-kind="link" data-visibility="public">
+        <li class="entry" id="site-res_…" data-kind="link" data-visibility="public">
           <a href="https://klot.ski" target="_blank" rel="noopener noreferrer">klot.ski</a>
           <small class="state"><span class="host"><span>klot.ski&nbsp;</span></span>↗</small>
         </li>
         <!-- reached through its owner's daemon, so it is a button that opens
              the browser's ticket-minting prompt here. -->
-        <li class="entry" data-kind="service" data-visibility="private">
-          <button class="outline">Hermes</button>
+        <li class="entry" id="site-res_…" data-kind="service" data-visibility="private">
+          <button class="outline" data-service-id="res_…"
+                  data-service-name="Hermes">Hermes</button>
           <small class="state">private</small>
         </li>
       </ul>
 
       <!-- then a fold per folder, in the owner's declared order followed by
            unlisted folders in the order they first appear -->
-      <details class="folder" open>
+      <details class="folder" data-folder="Games" open>
         <summary>Games <small>3</small></summary>
         <ul class="entries">…</ul>
       </details>
@@ -149,8 +152,8 @@ what the page's success and failure messages are drawn with.
 The list lives in `PROPERTIES` in `theme.rs` and is served at
 `GET /api/theme/properties`, which is also what `devsite theme properties`
 prints. Every `--pico-*` name in it is a variable the vendored Pico actually
-defines. The three folder-layout names are consumed explicitly by `app.js` and
-never emitted as CSS. An unrecognized name is rejected rather than accepted,
+defines. The control plane consumes the three folder-layout names as profile data. It
+never emits them as CSS. An unrecognized name is rejected rather than accepted,
 stored, and left to do nothing.
 
 | Group | Properties | Value |

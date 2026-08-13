@@ -2173,20 +2173,21 @@ async fn doctor(paths: &Paths, output: Output) -> Result<()> {
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             let legacy = paths.root.join("identity.key");
-            let message = if legacy.exists() {
-                "Legacy identity.key and identity.pub support ends in version 0.6.0. Run `devsite login` or `devsite daemon run` before you upgrade. The command moves these files."
+            let (status, message) = if legacy.exists() {
+                (
+                    "failure",
+                    "Version 0.6.0 does not read identity.key or identity.pub. Start version 0.5.1 once to move these files.",
+                )
+            } else if config.machine_credential.is_some() {
+                ("failure", "No endpoint identity exists yet.")
             } else {
-                "No endpoint identity exists yet."
+                ("skipped", "No endpoint identity exists yet.")
             };
             push_doctor_check(
                 &mut checks,
                 &mut counts,
                 "identity.private_key",
-                if config.machine_credential.is_some() {
-                    "failure"
-                } else {
-                    "skipped"
-                },
+                status,
                 message,
             );
             None

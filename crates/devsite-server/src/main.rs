@@ -114,6 +114,7 @@ async fn main() -> Result<()> {
         issuer.public_key_hex()
     );
 
+    let (profile_changes, _) = tokio::sync::broadcast::channel(64);
     let state = Arc::new(AppState {
         db: Mutex::new(db),
         rate_limits: Mutex::new(RateLimits::default()),
@@ -121,6 +122,8 @@ async fn main() -> Result<()> {
         identity_namespace: oidc.issuer().to_string(),
         public_origin: config.public_origin.clone(),
         relay_issuer,
+        profile_changes,
+        profile_revision: std::sync::atomic::AtomicU64::new(0),
     });
 
     let index = config.web_root.join("index.html");

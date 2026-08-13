@@ -1,38 +1,29 @@
-dev.site v0.5.1 moves production Iroh traffic to the managed shared relay tier.
+dev.site v0.6.0 gives static profile pages a small server-rendered update path.
 
-## highlights
+## Highlights
 
-- The CLI and daemon use four project relays through an Iroh custom relay map.
-- The control plane keeps the Iroh Services API key in its environment.
-- The control plane gives each client and daemon an endpoint-scoped relay token.
-- Public Iroh relays remain available only to transport integration tests.
+- The control plane renders profile HTML for each viewer.
+- Fixi starts profile requests and handles incoming share actions.
+- SSEXi receives the initial profile and later profile changes.
+- Paxi morphs each profile fragment while the page keeps local folder state.
+- Strict TypeScript and Biome now check the browser code.
+- The control plane filters profile updates by affected account.
 
-## deployment
+## Identity file change
 
-Set `IROH_SERVICES_API_SECRET` on the control plane before you release the new CLI.
-The server must return scoped relay tokens to version 0.5.1 clients.
+Version 0.6.0 removes the legacy identity file migration promised in version 0.5.1.
 
-The relay token grants relay use only. It does not grant access to a dev.site service.
-The existing signed capability checks still control each service connection.
+The CLI and daemon use `devsite-endpoint.key` and `devsite-endpoint.pub`. They do not read
+or move `identity.key` or `identity.pub`.
 
-## identity file migration
+If these legacy files remain, start version 0.5.1 once before you install version 0.6.0.
 
-Version 0.5.1 continues to move legacy `identity.key` and `identity.pub` files to
-`devsite-endpoint.key` and `devsite-endpoint.pub`.
-
-The migration checks only the dev.site config directory. It moves a legacy file only when
-the destination file does not exist.
-
-`devsite doctor` warns that version 0.6.0 removes legacy file support.
-
-Before you upgrade to version 0.6.0, run `devsite login` or `devsite daemon run` with
-version 0.5.1 or an earlier version.
-
-## upgrade notes
+## Upgrade notes
 
 - Database migrations are not required.
+- Existing profiles and themes continue to work.
 - Existing `devsite-endpoint.key` and `devsite-endpoint.pub` files continue to work.
-- Version 0.6.0 will not read or move `identity.key` or `identity.pub`.
+- The release workflow now checks Rust, TypeScript, Biome, and browser tests.
 
 Homebrew users can upgrade with:
 

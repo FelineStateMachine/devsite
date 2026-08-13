@@ -212,13 +212,12 @@ Native Linux packages may install `packaging/systemd/devsite.service` as a user 
 systemctl --user enable --now devsite.service
 ```
 
-Before you upgrade to version 0.6.0, run `devsite login` or `devsite daemon run` with an
-earlier version. That version moves legacy `identity.key` and `identity.pub` files only
-from the dev.site config directory. Version 0.6.0 uses `devsite-endpoint.key` and
-`devsite-endpoint.pub`. It does not read or move the legacy files. See
-[Keys and endpoint identities](docs/keys-and-identities.md) for the migration rules. The
-daemon registers that public endpoint id with the control plane at startup, publishes its
-address through Iroh, and reloads service targets and authorizations every two seconds.
+Version 0.6.0 uses `devsite-endpoint.key` and `devsite-endpoint.pub`. It does not read or
+move legacy `identity.key` and `identity.pub` files. Start version 0.5.1 once before the
+upgrade if these files remain. See [Keys and endpoint identities](docs/keys-and-identities.md)
+for the migration rules. The daemon registers that public endpoint id with the control
+plane at startup. It publishes its address through Iroh and reloads authorizations every
+two seconds.
 Adding or removing a service does not require a restart.
 
 `devsite daemon status` reports whether this config directory has a live daemon. The same
@@ -240,14 +239,21 @@ remains a bounded list of approved declarations rather than arbitrary CSS: Pico 
 control the theme, while `--devsite-folders`, `--devsite-open-folders`, and
 `--devsite-folder-order` control the initial semantic folder layout.
 
+Profile routes load a static shell and one viewer-specific HTML stream. Fixi starts the
+request. SSEXi reads each event, and Paxi morphs each profile fragment into the page. The
+control plane sends a new fragment after profile data changes. The browser keeps the
+reader's folder state during each morph.
+
 ## Local development
 
-Prerequisite: stable Rust.
+Prerequisites: stable Rust and Node.js 24.
 
 Set `IROH_SERVICES_API_SECRET` before you start the control plane.
 The control plane uses it to make endpoint-scoped relay tokens.
 
 ```bash
+npm ci
+npm run build:web
 export DEVSITE_PUBLIC_ORIGIN=http://127.0.0.1:4000
 cargo run -p devsite-server
 ```
@@ -269,6 +275,9 @@ cargo run -p devsite-server -- issue-session alice
 Build and test everything:
 
 ```bash
+npm run check:web
+npx playwright install chromium
+npm run test:web
 cargo test --workspace
 cargo build --release -p devsite-cli
 ```
@@ -302,7 +311,7 @@ the configured issuer, client, and subjects.
 | `crates/devsite-daemon` | Capability verification and fixed-target TCP forwarding. |
 | `crates/devsite-cli` | Login, links, service hosting/connect, themes, and daemon lifecycle. |
 | `crates/devsite-server` | Axum/SQLite control plane and capability issuance. |
-| `web/` | Semantic HTML, plain JavaScript, Pico CSS, and vendored fonts. |
+| `web/` | Semantic HTML, strict TypeScript, Fixi, Paxi, SSEXi, Pico CSS, and vendored fonts. |
 
 ## Security boundaries
 

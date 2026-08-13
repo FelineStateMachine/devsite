@@ -48,8 +48,22 @@ jobs:
           rustup update stable
           rustup default stable
 
+      - name: Install Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.1.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install web dependencies
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
       - name: Test
-        run: cargo test --workspace --locked
+        run: |
+          cargo test --workspace --locked
+          npm run check:web
+          npm run test:web
 
   build:
     name: Build ${{ matrix.target }}

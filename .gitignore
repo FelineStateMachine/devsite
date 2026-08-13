@@ -1,5 +1,6 @@
 /target
 /web/pkg
+/node_modules
 
 # Secrets. The capability signing key is the root of trust for every daemon, and identity
 # keys are daemon identities — none of it belongs in the repository.

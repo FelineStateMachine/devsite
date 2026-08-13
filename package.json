@@ -1,0 +1,25 @@
+{
+  "name": "devsite-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:web": "esbuild web/app.ts --bundle --format=esm --legal-comments=none --outfile=web/pkg/app.js --sourcemap --target=es2022",
+    "check:web": "npm run typecheck:web && npm run lint:web && npm run build:web",
+    "lint:web": "biome lint web",
+    "test:web": "npm run build:web && playwright test",
+    "typecheck:web": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@bigskysoftware/paxi-js": "0.0.1",
+    "@bigskysoftware/ssexi-js": "0.0.1",
+    "fixi-js": "0.9.4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.8",
+    "@playwright/test": "1.62.1",
+    "@types/node": "26.2.0",
+    "esbuild": "0.28.2",
+    "html-minifier-terser": "7.2.0",
+    "typescript": "7.0.2"
+  }
+}

@@ -7,8 +7,8 @@
 <!-- Pico first, this site's few additions second, and the profile's own theme
      last. Last is necessary but not sufficient: Pico's palette sits on
      :root:not([data-theme=dark]), which is specificity (0,2,0), so the theme
-     block matches it with :root[data-profile="…"] and wins on order. See
-     applyTheme in app.js. -->
+     block matches it with :root[data-profile="…"] and wins on order. The profile
+     stream writes this block before it morphs the profile markup. -->
 <link rel="stylesheet" href="/vendor/pico.min.css">
 <link rel="stylesheet" href="/site.css">
 <style id="profile-theme"></style>
@@ -35,6 +35,102 @@
   </nav>
 </header>
 
+<template id="home-template">
+  <article>
+    <hgroup>
+      <h1 aria-label="dev.site"><span aria-hidden="true">    █                                ▀      ▄
+ ▄▄▄█   ▄▄▄   ▄   ▄          ▄▄▄   ▄▄▄    ▄▄█▄▄   ▄▄▄
+█▀ ▀█  █▀  █  ▀▄ ▄▀         █   ▀    █      █    █▀  █
+█   █  █▀▀▀▀   █▄█           ▀▀▀▄    █      █    █▀▀▀▀
+▀█▄██  ▀█▄▄▀    █      █    ▀▄▄▄▀  ▄▄█▄▄    ▀▄▄  ▀█▄▄▀</span></h1>
+      <p>links and services across all of your development sites</p>
+    </hgroup>
+    <figure class="sequence">
+      <figcaption>authorization only - no service bytes</figcaption>
+      <header aria-hidden="true">
+        <strong>host cli</strong>
+        <strong>dev.site</strong>
+        <strong>approved user</strong>
+      </header>
+      <div>
+        <i aria-hidden="true"></i><i aria-hidden="true"></i><i aria-hidden="true"></i>
+        <ol aria-label="A host proves control of and registers its bound endpoint, then receives current service authorizations from dev.site. An approved user redeems a one-use ticket into a client-bound session, requests a signed capability for each connection, then opens an end-to-end encrypted Iroh QUIC stream to the host service.">
+          <li><span>prove + register bound endpoint</span></li>
+          <li><span>sync authorization snapshot</span></li>
+          <li><span>redeem one-use ticket + client key</span></li>
+          <li><span>client-bound session</span></li>
+          <li><span>request one-stream capability</span></li>
+          <li><span>signed capability + daemon id</span></li>
+          <li><span>end-to-end encrypted Iroh QUIC</span></li>
+        </ol>
+      </div>
+    </figure>
+  </article>
+
+  <section aria-labelledby="install-title">
+    <h2 id="install-title">Install</h2>
+    <div data-install-control></div>
+  </section>
+
+  <hr>
+
+  <details>
+    <summary>Overview</summary>
+    <p>Store useful URLs, shared services, and temporary access</p>
+    <article>
+      <h3>Machine Enrollment</h3>
+      <pre><code>devsite login dmt_***</code></pre>
+      <blockquote>A single-use ticket creates a revocable, identity-bound machine credential</blockquote>
+    </article>
+    <article>
+      <h3>Add Links to your site</h3>
+      <pre><code>devsite link set --name docs --url https://docs.example.com --public</code></pre>
+      <blockquote>List a public, private, shared URLs on your page</blockquote>
+    </article>
+    <article>
+      <h3>Share your Services</h3>
+      <pre><code>devsite service host 5432 --name postgres</code></pre>
+      <blockquote>
+        <p>Access any local TCP port. never publicly accessible</p>
+        <p>Service is accessed anywhere with a single use ticket.</p>
+      </blockquote>
+      <pre><code>devsite connect dst_***</code></pre>
+    </article>
+    <article>
+      <h3>Delegate Granular Access</h3>
+      <blockquote><p>A sandboxed agent can request a service by keyword. The request is matched to an accessible service, and a scoped grant is presented for approval.</p>
+        <p>The requester receives only a short-lived grant bound to the selected
+        service and its temporary endpoint.</p></blockquote>
+      <pre><code>devsite access request postgres --request request.json --key requester.key</code></pre>
+      <blockquote>Resolution is limited to services available to the approving account. Grants
+        are short-lived and revocable.</blockquote>
+      <pre><code>devsite access resolve postgres
+devsite access grant --request request.json --plan
+devsite access grant --request request.json --approved-plan dsp_***</code></pre>
+      <blockquote>The requester opens an on-demand, endpoint-bound connection to the selected service.</blockquote>
+      <pre><code>devsite access connect dss_*** --key requester.key</code></pre>
+    </article>
+    <article>
+      <h3>Persist the Daemon</h3>
+      <pre><code>devsite daemon run</code></pre>
+      <blockquote>autorun it with Homebrew services or systemd to keep services available for
+        on-demand connections</blockquote>
+    </article>
+  </details>
+
+  <details>
+    <summary>Important Concepts</summary>
+    <p>Tickets, keys, and the ALPN tell the story of how it works</p>
+    <nav aria-label="Security concept guides">
+      <ul>
+        <li><a href="/concepts.html#tickets">Tickets</a></li>
+        <li><a href="/concepts.html#keys">Keys</a></li>
+        <li><a href="/concepts.html#protocol">ALPN</a></li>
+      </ul>
+    </nav>
+  </details>
+</template>
+
 <main class="container" id="main" aria-busy="true"></main>
 
 <footer class="container" id="page-footer" hidden></footer>
@@ -50,6 +146,6 @@
   </article>
 </dialog>
 
-<script type="module" src="/app.js"></script>
+<script type="module" src="/pkg/app.js"></script>
 </body>
 </html>

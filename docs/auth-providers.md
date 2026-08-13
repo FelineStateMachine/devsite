@@ -119,7 +119,7 @@ security mechanisms appropriate to the new protocol. The implementation path is:
 5. Call `api::establish_browser_session` with that identity.
 6. Put the returned token into `api::browser_session_cookie` and redirect to a local path.
 7. Wire the adapter router in `main.rs`, replacing `oidc::router(...)`.
-8. Keep `/auth/start` as the browser entrypoint so `web/app.js` remains provider-neutral.
+8. Keep `/auth/start` as the browser entrypoint so `web/app.ts` remains provider-neutral.
 
 A callback ends approximately like this:
 
@@ -191,7 +191,7 @@ let app = api::router(Arc::clone(&state))
 
 For one replacement provider, change the module and router construction in one place. The current
 UI advertises one `auth.start_url`, so supporting several providers simultaneously additionally
-requires a provider list in `/api/config` and a provider picker in `web/app.js`. The account table
+requires a provider list in `/api/config` and a provider picker in `web/app.ts`. The account table
 already supports multiple namespaces.
 
 ### Security contract for a new adapter
@@ -231,5 +231,5 @@ Run the repository checks before deploying:
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release --locked -p devsite-server
-node --check web/app.js
+npm run check:web
 ```

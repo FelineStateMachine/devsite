@@ -42,16 +42,16 @@ same key to sign the chosen resource, requester endpoint, request id, and grant 
 Capabilities sent to this daemon name its public endpoint key as the audience. The daemon
 rejects a capability issued for another endpoint even if every other claim is valid.
 
-### Prepare for version 0.6.0
+### Legacy files in version 0.6.0
 
-Before you upgrade to version 0.6.0, run `devsite login` or `devsite daemon run` with an
-earlier version. That version moves `identity.key` and `identity.pub` to the new names.
+Version 0.6.0 does not read or move `identity.key` and `identity.pub`. Start version 0.5.1
+once before the upgrade if these legacy files remain.
 
-The earlier version checks only these exact names in the resolved dev.site config directory.
+Version 0.5.1 checks only these exact names in the resolved dev.site config directory.
 It does not scan the current directory, home directory, SSH directory, or filesystem for
 similar names.
 
-The earlier version moves a legacy file only when the target file does not exist:
+Version 0.5.1 moves a legacy file only when the target file does not exist:
 
 ```text
 identity.key  → devsite-endpoint.key

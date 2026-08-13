@@ -5,25 +5,28 @@ FROM node:24-bookworm-slim AS web
 
 WORKDIR /src
 
-# Versions are exact so rebuilding a commit cannot silently change its assets.
-RUN npm install --global esbuild@0.25.12 html-minifier-terser@7.2.0
+# Versions are exact in the lock file.
+COPY package.json package-lock.json tsconfig.json biome.json ./
+RUN npm ci
 
 # Tool installation is independent of the source, so ordinary web edits only
 # invalidate the small minification layer below.
 COPY web ./web
-RUN mkdir /out \
+RUN npm run check:web \
+ && mkdir /out \
  && cp -R web/. /out/ \
- && esbuild web/app.js \
+ && rm /out/*.ts /out/pkg/app.js.map \
+ && npx --no-install esbuild web/pkg/app.js \
       --format=esm \
       --legal-comments=none \
       --minify \
-      --outfile=/out/app.js \
+      --outfile=/out/pkg/app.js \
       --target=es2022 \
- && esbuild web/site.css \
+ && npx --no-install esbuild web/site.css \
       --legal-comments=none \
       --minify \
       --outfile=/out/site.css \
- && html-minifier-terser web/index.html \
+ && npx --no-install html-minifier-terser web/index.html \
       --collapse-whitespace \
       --remove-comments \
       --remove-redundant-attributes \

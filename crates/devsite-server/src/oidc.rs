@@ -533,7 +533,7 @@ fn login_failed(status: StatusCode) -> Response {
         Html(
             "<!doctype html><meta charset=utf-8><title>Sign-in failed</title>\
              <main><h1>Sign-in failed.</h1><p>The login could not be verified.</p>\
-             <p><a href=/auth/start>Try again</a> · <a href=/>Return home</a></p></main>",
+             <p><a href=/auth/start>Try again</a> - <a href=/>Return home</a></p></main>",
         ),
     )
         .into_response()

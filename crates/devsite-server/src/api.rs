@@ -1,20 +1,27 @@
 //! HTTP surface of the control plane.
 
 use std::collections::{HashMap, HashSet};
+use std::convert::Infallible;
+use std::fmt::Write as _;
 use std::hash::Hash;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use devsite_proto::access_plan::ServiceGrantPlanClaims;
 use devsite_proto::capability::KeyBytes;
 use devsite_proto::{AccountId, ResourceId};
+use futures_util::stream::{self, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
+use tokio_stream::wrappers::BroadcastStream;
 
 use crate::auth::{self, ExternalIdentity};
 use crate::db::{Db, MachineAuthentication, ResourceKind, ShareStatus};
@@ -29,6 +36,28 @@ pub struct AppState {
     pub identity_namespace: String,
     pub public_origin: String,
     pub relay_issuer: devsite_iroh::RelayIssuer,
+    pub profile_changes: broadcast::Sender<ProfileChange>,
+    pub profile_revision: AtomicU64,
+}
+
+#[derive(Clone)]
+pub struct ProfileChange {
+    revision: u64,
+    accounts: Arc<HashSet<AccountId>>,
+}
+
+impl AppState {
+    fn notify_profiles(&self, accounts: impl IntoIterator<Item = AccountId>) {
+        let accounts = accounts.into_iter().collect::<HashSet<_>>();
+        if accounts.is_empty() {
+            return;
+        }
+        let revision = self.profile_revision.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.profile_changes.send(ProfileChange {
+            revision,
+            accounts: Arc::new(accounts),
+        });
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -439,6 +468,14 @@ pub fn router(state: Shared) -> Router {
             "/api/share-invitations/{id}",
             delete(decline_share_invitation),
         )
+        .route(
+            "/ui/share-invitations/{id}/accept",
+            post(accept_share_invitation_ui),
+        )
+        .route(
+            "/ui/share-invitations/{id}",
+            delete(decline_share_invitation_ui),
+        )
         .route("/api/daemon", get(daemon_info).put(register_daemon))
         .route("/api/daemon/authorizations", get(daemon_authorizations))
         .route("/api/machine/enroll", put(enroll_machine))
@@ -457,6 +494,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/theme", get(read_theme).put(write_theme))
         .route("/api/theme/properties", get(theme_properties))
         .route("/api/profile/{handle}", get(profile))
+        .route("/ui/profile/{handle}/stream", get(profile_stream))
         .route("/api/services/{id}/ticket", post(create_connection_ticket))
         .route("/api/tickets/redeem", post(redeem_connection_ticket))
         .route(
@@ -596,6 +634,8 @@ async fn claim_handle(
         }
     }
     db.set_handle(id, &handle).map_err(ApiError::internal)?;
+    drop(db);
+    state.notify_profiles([id]);
     Ok(Json(serde_json::json!({ "handle": handle })))
 }
 
@@ -626,7 +666,10 @@ async fn create_resource(
     // not Carol plus whoever was named the last time it ran.
     db.set_shares(resource, &prepared.viewers)
         .map_err(ApiError::internal)?;
+    let viewers = db.shared_with(resource).map_err(ApiError::internal)?;
     prepared.plan.target.resource_id = Some(resource.to_string());
+    drop(db);
+    state.notify_profiles(std::iter::once(owner).chain(viewers));
 
     Ok(Json(CreateResourceResponse {
         resource_id: resource.to_string(),
@@ -999,12 +1042,15 @@ async fn delete_resource(
     let resource = ResourceId::from_str(&id).map_err(|_| ApiError::not_found())?;
 
     let db = state.db.lock().unwrap();
+    let viewers = db.shared_with(resource).map_err(ApiError::internal)?;
     if !db
         .delete_resource(owner, resource)
         .map_err(ApiError::internal)?
     {
         return Err(ApiError::not_found());
     }
+    drop(db);
+    state.notify_profiles(std::iter::once(owner).chain(viewers));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1067,9 +1113,13 @@ async fn set_resource_shares(
             "only a shared resource can name viewers",
         ));
     }
+    let old_viewers = db.shared_with(resource_id).map_err(ApiError::internal)?;
     let viewers = resolve_share_accounts(&db, owner, &body.share_with)?;
     db.set_shares(resource_id, &viewers)
         .map_err(ApiError::internal)?;
+    let new_viewers = db.shared_with(resource_id).map_err(ApiError::internal)?;
+    drop(db);
+    state.notify_profiles(std::iter::once(owner).chain(old_viewers).chain(new_viewers));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1097,16 +1147,7 @@ async fn accept_share_invitation(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    let viewer = require_browser_account(&state, &headers)?;
-    check_rate(&state, viewer, RateClass::Mutation)?;
-    let resource = ResourceId::from_str(&id).map_err(|_| ApiError::not_found())?;
-    let mut db = state.db.lock().unwrap();
-    if !db
-        .accept_share(viewer, resource)
-        .map_err(ApiError::internal)?
-    {
-        return Err(ApiError::not_found());
-    }
+    update_share_invitation(&state, &headers, &id, true)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1115,17 +1156,119 @@ async fn decline_share_invitation(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    let viewer = require_browser_account(&state, &headers)?;
-    check_rate(&state, viewer, RateClass::Mutation)?;
-    let resource = ResourceId::from_str(&id).map_err(|_| ApiError::not_found())?;
+    update_share_invitation(&state, &headers, &id, false)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn accept_share_invitation_ui(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Html<String>> {
+    let viewer = update_share_invitation(&state, &headers, &id, true)?;
+    incoming_share_controls(&state, viewer)
+}
+
+async fn decline_share_invitation_ui(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Html<String>> {
+    let viewer = update_share_invitation(&state, &headers, &id, false)?;
+    incoming_share_controls(&state, viewer)
+}
+
+fn update_share_invitation(
+    state: &AppState,
+    headers: &HeaderMap,
+    id: &str,
+    accept: bool,
+) -> ApiResult<AccountId> {
+    let viewer = require_browser_account(state, headers)?;
+    check_rate(state, viewer, RateClass::Mutation)?;
+    let resource = ResourceId::from_str(id).map_err(|_| ApiError::not_found())?;
     let mut db = state.db.lock().unwrap();
-    if !db
-        .decline_share(viewer, resource)
-        .map_err(ApiError::internal)?
-    {
+    let changed = if accept {
+        db.accept_share(viewer, resource)
+    } else {
+        db.decline_share(viewer, resource)
+    }
+    .map_err(ApiError::internal)?;
+    if !changed {
         return Err(ApiError::not_found());
     }
-    Ok(StatusCode::NO_CONTENT)
+    let owner = db
+        .resource(resource)
+        .map_err(ApiError::internal)?
+        .ok_or_else(ApiError::not_found)?
+        .owner_id;
+    drop(db);
+    state.notify_profiles([viewer, owner]);
+    Ok(viewer)
+}
+
+fn incoming_share_controls(state: &AppState, viewer: AccountId) -> ApiResult<Html<String>> {
+    let db = state.db.lock().unwrap();
+    let invitations = db.incoming_shares(viewer).map_err(ApiError::internal)?;
+    if invitations.is_empty() {
+        return Ok(Html(
+            "<li><small>No incoming shares.</small></li>".to_string(),
+        ));
+    }
+
+    let mut html = String::new();
+    for invitation in invitations {
+        let id = invitation.resource.id;
+        let destination = invitation
+            .resource
+            .url
+            .as_deref()
+            .map_or_else(String::new, |url| {
+                format!(" - <span data-selectable>{}</span>", escape_html(url))
+            });
+        html.push_str(&format!(
+            "<li><div><strong>{}</strong><small>from @{} - {}{}</small></div>\
+             <div class=\"dashboard-actions\">",
+            escape_html(&invitation.resource.name),
+            escape_html(&invitation.owner_handle),
+            invitation.resource.kind.as_str(),
+            destination,
+        ));
+        if invitation.status == ShareStatus::Pending {
+            html.push_str(&format!(
+                "<button type=\"button\" fx-action=\"/ui/share-invitations/{id}/accept\" \
+                 fx-method=\"POST\" fx-target=\"#incoming-shares\" \
+                 fx-swap=\"innerHTML\">Accept</button>"
+            ));
+        }
+        let label = if invitation.status == ShareStatus::Pending {
+            "Decline"
+        } else {
+            "Remove"
+        };
+        html.push_str(&format!(
+            "<button class=\"secondary outline\" type=\"button\" \
+             fx-action=\"/ui/share-invitations/{id}\" fx-method=\"DELETE\" \
+             fx-target=\"#incoming-shares\" fx-swap=\"innerHTML\">{label}</button>\
+             </div></li>"
+        ));
+    }
+    Ok(Html(html))
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 /// Record which endpoint id this account's daemon answers on.
@@ -1295,6 +1438,8 @@ async fn set_profile_settings(
     let db = state.db.lock().unwrap();
     db.set_profile_private_only(account, body.private_only)
         .map_err(ApiError::internal)?;
+    drop(db);
+    state.notify_profiles([account]);
     Ok(Json(
         serde_json::json!({ "private_only": body.private_only }),
     ))
@@ -1460,6 +1605,8 @@ async fn write_theme(
     let db = state.db.lock().unwrap();
     db.set_custom_css(account, (!css.is_empty()).then_some(css.as_str()))
         .map_err(ApiError::internal)?;
+    drop(db);
+    state.notify_profiles([account]);
 
     Ok(Json(ThemeResponse {
         css,
@@ -1472,7 +1619,20 @@ async fn profile(
     headers: HeaderMap,
     Path(handle): Path<String>,
 ) -> ApiResult<impl IntoResponse> {
-    let viewer = current_account(&state, &headers)?;
+    Ok(Json(profile_snapshot(&state, &headers, &handle)?.response))
+}
+
+struct ProfileSnapshot {
+    owner_id: AccountId,
+    response: ProfileResponse,
+}
+
+fn profile_snapshot(
+    state: &AppState,
+    headers: &HeaderMap,
+    handle: &str,
+) -> ApiResult<ProfileSnapshot> {
+    let viewer = current_account(state, headers)?;
     let handle = handle.trim_start_matches('@').to_ascii_lowercase();
 
     let db = state.db.lock().unwrap();
@@ -1537,12 +1697,265 @@ async fn profile(
     // the website no longer writes anything. What the owner sees that others do
     // not is already expressed by the entries themselves — private resources,
     // and the "shared with me" list, which is populated for the owner alone.
-    Ok(Json(ProfileResponse {
-        handle,
-        entries,
-        shared_with_me,
-        theme,
-    }))
+    Ok(ProfileSnapshot {
+        owner_id: owner.id,
+        response: ProfileResponse {
+            handle,
+            entries,
+            shared_with_me,
+            theme,
+        },
+    })
+}
+
+async fn profile_stream(
+    State(state): State<Shared>,
+    headers: HeaderMap,
+    Path(handle): Path<String>,
+) -> ApiResult<Response> {
+    let receiver = state.profile_changes.subscribe();
+    let revision = state.profile_revision.load(Ordering::Relaxed);
+    let initial = profile_snapshot(&state, &headers, &handle)?;
+    let owner = initial.owner_id;
+    let filter_state = Arc::clone(&state);
+    let render_state = Arc::clone(&state);
+    let update_headers = headers.clone();
+    let update_handle = handle.clone();
+
+    let initial = stream::iter(profile_events(&initial.response, revision));
+    let updates = BroadcastStream::new(receiver)
+        .map(move |change| match change {
+            Ok(change) if change.accounts.contains(&owner) => Some(change.revision),
+            Ok(_) => None,
+            Err(_) => Some(filter_state.profile_revision.load(Ordering::Relaxed)),
+        })
+        .filter_map(|revision| async move { revision })
+        .map(move |revision| {
+            match profile_snapshot(&render_state, &update_headers, &update_handle) {
+                Ok(profile) => profile_events(&profile.response, revision),
+                Err(_) => vec![Ok(Event::default()
+                    .event("unavailable")
+                    .data("not found")
+                    .id(revision.to_string()))],
+            }
+        })
+        .flat_map(stream::iter);
+
+    let events = initial.chain(updates);
+    let mut response = Sse::new(events)
+        .keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("keep-alive"),
+        )
+        .into_response();
+    // A streaming response must reach the browser as each event arrives.
+    response.headers_mut().insert(
+        header::CONTENT_ENCODING,
+        header::HeaderValue::from_static("identity"),
+    );
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-accel-buffering"),
+        header::HeaderValue::from_static("no"),
+    );
+    Ok(response)
+}
+
+fn profile_events(profile: &ProfileResponse, revision: u64) -> Vec<Result<Event, Infallible>> {
+    let id = revision.to_string();
+    vec![
+        Ok(Event::default()
+            .event(r##"{"target":"#profile-theme","swap":"textContent"}"##)
+            .data(render_profile_theme(profile))
+            .id(id.clone())),
+        Ok(Event::default()
+            .data(render_profile_main(profile))
+            .id(id)
+            .retry(Duration::from_secs(3))),
+    ]
+}
+
+fn render_profile_theme(profile: &ProfileResponse) -> String {
+    let declarations = profile
+        .theme
+        .iter()
+        .filter(|declaration| declaration.property.starts_with("--pico-"))
+        .map(|declaration| format!("  {}: {};", declaration.property, declaration.value))
+        .collect::<Vec<_>>();
+    if declarations.is_empty() {
+        // SSEXi does not apply a message with empty data. One space clears the style.
+        return " ".to_string();
+    }
+    format!(
+        ":root[data-profile=\"{}\"] {{\n{}\n}}\n",
+        profile.handle,
+        declarations.join("\n")
+    )
+}
+
+struct ProfileLayout {
+    folders_open: bool,
+    open_folders: HashSet<String>,
+    folder_order: Vec<String>,
+}
+
+fn profile_layout(declarations: &[theme::Declaration]) -> ProfileLayout {
+    let value = |property| {
+        declarations
+            .iter()
+            .find(|declaration| declaration.property == property)
+            .map(|declaration| declaration.value.as_str())
+    };
+    let names = |property| {
+        value(property)
+            .and_then(|list| serde_json::from_str::<Vec<String>>(&format!("[{list}]")).ok())
+            .unwrap_or_default()
+    };
+    ProfileLayout {
+        folders_open: value(theme::FOLDERS) != Some("closed"),
+        open_folders: names(theme::OPEN_FOLDERS).into_iter().collect(),
+        folder_order: names(theme::FOLDER_ORDER),
+    }
+}
+
+fn render_profile_main(profile: &ProfileResponse) -> String {
+    let scheme = profile
+        .theme
+        .iter()
+        .find(|declaration| declaration.property == theme::SCHEME)
+        .map(|declaration| declaration.value.as_str())
+        .unwrap_or("auto");
+    let entries = profile
+        .entries
+        .iter()
+        .chain(profile.shared_with_me.iter())
+        .collect::<Vec<_>>();
+    let layout = profile_layout(&profile.theme);
+    let mut loose = Vec::new();
+    let mut folders: HashMap<String, Vec<&ProfileEntry>> = HashMap::new();
+    let mut first_folder_order = Vec::new();
+    for entry in &entries {
+        if let Some(folder) = &entry.folder {
+            if !folders.contains_key(folder) {
+                first_folder_order.push(folder.clone());
+            }
+            folders.entry(folder.clone()).or_default().push(entry);
+        } else {
+            loose.push(*entry);
+        }
+    }
+    let mut folder_order = Vec::new();
+    let mut placed = HashSet::new();
+    for folder in layout.folder_order.iter().chain(first_folder_order.iter()) {
+        if folders.contains_key(folder) && placed.insert(folder.clone()) {
+            folder_order.push(folder.clone());
+        }
+    }
+
+    let total = entries.len();
+    let count = if total == 1 {
+        "1 site".to_string()
+    } else {
+        format!("{total} sites")
+    };
+    let mut html = format!(
+        "<main class=\"container\" id=\"main\" data-profile-handle=\"{}\" \
+         data-profile-scheme=\"{}\"><article id=\"profile\"><hgroup><h1>@{}</h1>\
+         <p>{count}</p></hgroup>",
+        escape_html(&profile.handle),
+        escape_html(scheme),
+        escape_html(&profile.handle),
+    );
+    if total == 0 {
+        html.push_str("<p><small>Nothing published yet.</small></p>");
+    } else {
+        if !loose.is_empty() {
+            render_profile_entries(&mut html, &loose);
+        }
+        for folder in folder_order {
+            let items = folders.get(&folder).expect("a placed folder must exist");
+            let open = layout.folders_open || layout.open_folders.contains(&folder);
+            let _ = write!(
+                html,
+                "<details class=\"folder\" data-folder=\"{}\"{}><summary>{} \
+                 <small>{}</small></summary>",
+                escape_html(&folder),
+                if open { " open" } else { "" },
+                escape_html(&folder),
+                items.len(),
+            );
+            render_profile_entries(&mut html, items);
+            html.push_str("</details>");
+        }
+    }
+    html.push_str("</article></main>");
+    html
+}
+
+fn render_profile_entries(html: &mut String, entries: &[&ProfileEntry]) {
+    html.push_str("<ul class=\"entries\">");
+    for entry in entries {
+        let owner = entry.owner_handle.as_deref();
+        let owner_label = owner
+            .map(|handle| format!(" <small>from @{}</small>", escape_html(handle)))
+            .unwrap_or_default();
+        let _ = write!(
+            html,
+            "<li class=\"entry\" id=\"site-{}\" data-kind=\"{}\" \
+             data-visibility=\"{}\">",
+            entry.resource_id, entry.kind, entry.visibility,
+        );
+        if entry.kind == "link" {
+            let url = entry.url.as_deref().unwrap_or_default();
+            let note = if entry.visibility == "public" {
+                String::new()
+            } else {
+                format!("{} - ", escape_html(entry.visibility))
+            };
+            let _ = write!(
+                html,
+                "<a href=\"{}\" target=\"_blank\" rel=\"ugc nofollow noopener noreferrer\">\
+                 {}{owner_label}</a><small class=\"state\">{note}<span class=\"host\">\
+                 <span>{}&nbsp;</span></span>↗</small>",
+                escape_html(url),
+                escape_html(&entry.name),
+                escape_html(&link_host(url)),
+            );
+        } else {
+            let owner_attribute = owner
+                .map(|handle| format!(" data-service-owner=\"{}\"", escape_html(handle)))
+                .unwrap_or_default();
+            let note = if entry.visibility == "public" {
+                String::new()
+            } else {
+                format!(
+                    "<small class=\"state\">{}</small>",
+                    escape_html(entry.visibility)
+                )
+            };
+            let _ = write!(
+                html,
+                "<button class=\"outline\" type=\"button\" data-service-id=\"{}\" \
+                 data-service-name=\"{}\"{owner_attribute}>{}{owner_label}</button>{note}",
+                entry.resource_id,
+                escape_html(&entry.name),
+                escape_html(&entry.name),
+            );
+        }
+        html.push_str("</li>");
+    }
+    html.push_str("</ul>");
+}
+
+fn link_host(value: &str) -> String {
+    let Ok(url) = url::Url::parse(value) else {
+        return String::new();
+    };
+    let mut host = url.host_str().unwrap_or_default().to_string();
+    if let Some(port) = url.port() {
+        let _ = write!(host, ":{port}");
+    }
+    host
 }
 
 fn to_entry(resource: &crate::db::Resource, owner_handle: Option<String>) -> ProfileEntry {
@@ -2113,6 +2526,72 @@ fn parse_endpoint_id(text: &str) -> Option<KeyBytes> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn html_fragments_escape_text_and_attributes() {
+        assert_eq!(escape_html("<&>\"'"), "&lt;&amp;&gt;&quot;&#39;");
+    }
+
+    #[test]
+    fn profile_fragments_include_layout_theme_and_safe_entries() {
+        let profile = ProfileResponse {
+            handle: "alice".into(),
+            entries: vec![ProfileEntry {
+                resource_id: "res_one".into(),
+                name: "docs <stable>".into(),
+                kind: "link",
+                visibility: "public",
+                url: Some("https://docs.example:8443/guide".into()),
+                folder: Some("Docs".into()),
+                owner_handle: None,
+            }],
+            shared_with_me: vec![ProfileEntry {
+                resource_id: "res_two".into(),
+                name: "database".into(),
+                kind: "service",
+                visibility: "shared",
+                url: None,
+                folder: Some("Services".into()),
+                owner_handle: Some("bob".into()),
+            }],
+            theme: vec![
+                theme::Declaration {
+                    property: theme::SCHEME,
+                    value: "dark".into(),
+                },
+                theme::Declaration {
+                    property: theme::FOLDERS,
+                    value: "closed".into(),
+                },
+                theme::Declaration {
+                    property: theme::OPEN_FOLDERS,
+                    value: "\"Services\"".into(),
+                },
+                theme::Declaration {
+                    property: theme::FOLDER_ORDER,
+                    value: "\"Services\", \"Docs\"".into(),
+                },
+                theme::Declaration {
+                    property: "--pico-primary",
+                    value: "rebeccapurple".into(),
+                },
+            ],
+        };
+
+        let html = render_profile_main(&profile);
+        assert!(html.starts_with("<main class=\"container\" id=\"main\""));
+        assert!(html.contains("data-profile-scheme=\"dark\""));
+        assert!(html.contains("docs &lt;stable&gt;"));
+        assert!(html.contains("docs.example:8443"));
+        assert!(html.contains("data-folder=\"Services\" open"));
+        assert!(html.find("data-folder=\"Services\"") < html.find("data-folder=\"Docs\""));
+        assert!(html.contains("data-service-owner=\"bob\""));
+
+        let css = render_profile_theme(&profile);
+        assert!(css.contains(":root[data-profile=\"alice\"]"));
+        assert!(css.contains("--pico-primary: rebeccapurple"));
+        assert!(!css.contains(theme::FOLDER_ORDER));
+    }
 
     #[test]
     fn links_support_every_visibility_and_tcp_services_are_not_public() {
