@@ -94,12 +94,12 @@ impl ClientEndpoint {
         })
     }
 
-    /// Bind an endpoint to the dev.site relay network.
+    /// Bind an endpoint with relay settings from the control plane.
     pub async fn create_with_relay(
         secret_key: iroh::SecretKey,
-        relay_token: impl Into<String>,
+        relay_access: devsite_iroh::RelayAccess,
     ) -> Result<Self> {
-        let endpoint = Endpoint::builder(devsite_iroh::preset(secret_key, relay_token)?)
+        let endpoint = Endpoint::builder(devsite_iroh::preset(secret_key, relay_access)?)
             .bind()
             .await
             .context("binding client endpoint")?;

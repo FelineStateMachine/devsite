@@ -248,8 +248,10 @@ reader's folder state during each morph.
 
 Prerequisites: stable Rust and Node.js 24.
 
-Set `IROH_SERVICES_API_SECRET` before you start the control plane.
-The control plane uses it to make endpoint-scoped relay tokens.
+The control plane uses the n0 relay preset by default.
+Set `IROH_SERVICES_API_SECRET` to add endpoint-scoped Iroh Services tokens.
+Set `DEVSITE_RELAY_URLS` to a comma-separated list to use custom relays.
+The control plane sends the configured URLs and scoped token to each endpoint.
 
 ```bash
 npm ci
@@ -306,7 +308,7 @@ the configured issuer, client, and subjects.
 | Path | Responsibility |
 | --- | --- |
 | `crates/devsite-proto` | Opaque ids, signed capabilities, and the TCP stream handshake. |
-| `crates/devsite-iroh` | Shared Iroh Services relay configuration. |
+| `crates/devsite-iroh` | Shared n0 and custom relay configuration. |
 | `crates/devsite-client` | Native Iroh client endpoint and authorized service streams. |
 | `crates/devsite-daemon` | Capability verification and fixed-target TCP forwarding. |
 | `crates/devsite-cli` | Login, links, service hosting/connect, themes, and daemon lifecycle. |
@@ -323,7 +325,7 @@ the configured issuer, client, and subjects.
   memory, while the control plane stores its hash until expiry or disconnect.
 - Capabilities are bound to the authenticated Iroh client endpoint and cannot be replayed
   by another endpoint.
-- The control plane keeps the Iroh Services API key and gives each endpoint a scoped relay token.
+- When configured, the control plane keeps the Iroh Services key and gives each endpoint a scoped relay token.
 - Each capability opens one stream and its nonce is consumed once.
 - Unknown resources, invalid signatures, wrong audiences, wrong clients, expiry, and replay
   all produce the same denial.

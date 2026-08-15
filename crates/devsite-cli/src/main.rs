@@ -388,7 +388,8 @@ struct CapabilityResponse {
 #[derive(Deserialize)]
 struct RedeemTicketResponse {
     session_token: String,
-    relay_token: String,
+    #[serde(flatten)]
+    relay_access: devsite_iroh::RelayAccess,
     resource_id: String,
     name: String,
     expires_at: u64,
@@ -442,14 +443,10 @@ struct TunnelSessionInfo {
     resource_id: String,
     name: String,
     requester_endpoint_id: String,
-    relay_token: String,
+    #[serde(flatten)]
+    relay_access: devsite_iroh::RelayAccess,
     expires_at: u64,
     brokered: bool,
-}
-
-#[derive(Deserialize)]
-struct RegisterDaemonResponse {
-    relay_token: String,
 }
 
 #[derive(Deserialize)]
@@ -1183,7 +1180,7 @@ async fn connect(server: &str, ticket: &str, listen: SocketAddr, output: Output)
         .await
         .context("redeeming connection ticket")?;
     let client =
-        Arc::new(ClientEndpoint::create_with_relay(secret_key, redeemed.relay_token).await?);
+        Arc::new(ClientEndpoint::create_with_relay(secret_key, redeemed.relay_access).await?);
     let api = Arc::new(ControlPlane::new(server, Some(redeemed.session_token)));
     run_tunnel(
         "connect",
@@ -1479,7 +1476,7 @@ async fn connect_grant(
         bail!("the grant is not bound to the supplied requester endpoint key");
     }
     let client =
-        Arc::new(ClientEndpoint::create_with_relay(secret_key, session.relay_token).await?);
+        Arc::new(ClientEndpoint::create_with_relay(secret_key, session.relay_access).await?);
     run_tunnel(
         "access.connect",
         server,
@@ -2850,14 +2847,13 @@ async fn run_daemon(paths: &Paths, server: &str, output: Output) -> Result<()> {
 
     // The endpoint id is the public half of the key in DEVSITE_HOME/identity, so
     // it is the same on every run. Register it before the endpoint binds so the
-    // control plane can make its scoped relay token.
+    // control plane can return its relay settings.
     let api = ControlPlane::new(&server_url, token);
-    let registration: RegisterDaemonResponse = api
+    let relay_access: devsite_iroh::RelayAccess = api
         .put("/api/daemon", &serde_json::json!({ "proof": proof }))
         .await
         .context("registering this daemon with the control plane")?;
-    let daemon =
-        Arc::new(Daemon::bind_with_relay(secret_key, config, registration.relay_token).await?);
+    let daemon = Arc::new(Daemon::bind_with_relay(secret_key, config, relay_access).await?);
 
     let relay = daemon
         .endpoint()

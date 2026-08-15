@@ -61,14 +61,14 @@ impl Daemon {
         .await
     }
 
-    /// Bind the endpoint to the dev.site relay network.
+    /// Bind the endpoint with relay settings from the control plane.
     pub async fn bind_with_relay(
         secret_key: SecretKey,
         config: DaemonConfig,
-        relay_token: impl Into<String>,
+        relay_access: devsite_iroh::RelayAccess,
     ) -> Result<Self> {
         Self::bind_builder(
-            Endpoint::builder(devsite_iroh::preset(secret_key, relay_token)?),
+            Endpoint::builder(devsite_iroh::preset(secret_key, relay_access)?),
             config,
         )
         .await

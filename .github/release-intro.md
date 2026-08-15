@@ -1,29 +1,19 @@
-dev.site v0.6.0 gives static profile pages a small server-rendered update path.
+dev.site v0.6.1 makes relay selection part of the control-plane configuration.
 
 ## Highlights
 
-- The control plane renders profile HTML for each viewer.
-- Fixi starts profile requests and handles incoming share actions.
-- SSEXi receives the initial profile and later profile changes.
-- Paxi morphs each profile fragment while the page keeps local folder state.
-- Strict TypeScript and Biome now check the browser code.
-- The control plane filters profile updates by affected account.
-
-## Identity file change
-
-Version 0.6.0 removes the legacy identity file migration promised in version 0.5.1.
-
-The CLI and daemon use `devsite-endpoint.key` and `devsite-endpoint.pub`. They do not read
-or move `identity.key` or `identity.pub`.
-
-If these legacy files remain, start version 0.5.1 once before you install version 0.6.0.
+- The control plane uses the n0 relay preset by default.
+- `IROH_SERVICES_API_SECRET` adds endpoint-scoped relay tokens.
+- `DEVSITE_RELAY_URLS` selects a comma-separated custom relay list.
+- The control plane sends the relay list and scoped token to each endpoint.
+- The dev.site deployment keeps its custom relay list in `fly.toml`.
 
 ## Upgrade notes
 
 - Database migrations are not required.
-- Existing profiles and themes continue to work.
-- Existing `devsite-endpoint.key` and `devsite-endpoint.pub` files continue to work.
-- The release workflow now checks Rust, TypeScript, Biome, and browser tests.
+- Existing endpoint identities continue to work.
+- Self-hosted deployments can remove `DEVSITE_RELAY_URLS` to use the n0 preset.
+- Self-hosted deployments can replace `DEVSITE_RELAY_URLS` with their Iroh Services relays.
 
 Homebrew users can upgrade with:
 

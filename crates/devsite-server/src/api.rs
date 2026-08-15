@@ -35,7 +35,7 @@ pub struct AppState {
     pub issuer: Issuer,
     pub identity_namespace: String,
     pub public_origin: String,
-    pub relay_issuer: devsite_iroh::RelayIssuer,
+    pub relay_config: devsite_iroh::RelayConfig,
     pub profile_changes: broadcast::Sender<ProfileChange>,
     pub profile_revision: AtomicU64,
 }
@@ -431,7 +431,8 @@ pub struct RedeemTicketRequest {
 #[derive(Serialize)]
 pub struct RedeemTicketResponse {
     pub session_token: String,
-    pub relay_token: String,
+    #[serde(flatten)]
+    pub relay_access: devsite_iroh::RelayAccess,
     pub resource_id: String,
     pub name: String,
     pub expires_at: u64,
@@ -1293,11 +1294,11 @@ async fn register_daemon(
 
     let endpoint_key = parse_endpoint_id(&machine.endpoint_id)
         .ok_or_else(|| ApiError::internal(anyhow::anyhow!("stored endpoint id is invalid")))?;
-    let relay_token = state
-        .relay_issuer
-        .token(&endpoint_key)
+    let relay_access = state
+        .relay_config
+        .access(&endpoint_key)
         .map_err(ApiError::internal)?;
-    Ok(Json(serde_json::json!({ "relay_token": relay_token })))
+    Ok(Json(relay_access))
 }
 
 /// Report endpoint identities without implying daemon liveness. Registration is
@@ -2336,9 +2337,9 @@ async fn redeem_connection_ticket(
 
     Ok(Json(RedeemTicketResponse {
         session_token,
-        relay_token: state
-            .relay_issuer
-            .token(&client_key)
+        relay_access: state
+            .relay_config
+            .access(&client_key)
             .map_err(ApiError::internal)?,
         resource_id: resource.id.to_string(),
         name: resource.name,
@@ -2459,15 +2460,20 @@ async fn tunnel_session_info(
     {
         return Err(invalid_tunnel_session());
     }
+    let relay_access = state
+        .relay_config
+        .access(
+            &parse_endpoint_id(&session.client_endpoint_id).ok_or_else(|| {
+                ApiError::internal(anyhow::anyhow!("stored client endpoint id is invalid"))
+            })?,
+        )
+        .map_err(ApiError::internal)?;
     Ok(Json(serde_json::json!({
         "resource_id": resource.id.to_string(),
         "name": resource.name,
         "requester_endpoint_id": session.client_endpoint_id,
-        "relay_token": state.relay_issuer.token(
-            &parse_endpoint_id(&session.client_endpoint_id).ok_or_else(||
-                ApiError::internal(anyhow::anyhow!("stored client endpoint id is invalid"))
-            )?
-        ).map_err(ApiError::internal)?,
+        "relay_token": relay_access.relay_token,
+        "relay_urls": relay_access.relay_urls,
         "expires_at": session.expires_at,
         "brokered": session.issuer_credential_id.is_some(),
     })))

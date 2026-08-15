@@ -112,7 +112,8 @@ non-OIDC adapter.
 | `DEVSITE_OIDC_SCOPES` | optional | Space-separated; defaults to `openid` and must include it. |
 | `DEVSITE_OIDC_ALGORITHMS` | optional | Allowed asymmetric JWT algorithms; defaults to Shoo's `ES256`. |
 | `DEVSITE_SIGNING_KEY` | `fly secrets` | Hex. Never in the repository. |
-| `IROH_SERVICES_API_SECRET` | `fly secrets` | Iroh Services API key. Never in the repository. |
+| `IROH_SERVICES_API_SECRET` | optional secret | Iroh Services API key for scoped relay tokens. |
+| `DEVSITE_RELAY_URLS` | optional | Comma-separated custom relay URLs. The n0 preset is the default. |
 | `DEVSITE_BIND` | `Dockerfile` | `0.0.0.0:8080`, matching `internal_port`. |
 | `DEVSITE_DB` | `Dockerfile` | `/data/devsite.db`, on the volume. |
 | `DEVSITE_STATE_DIR` | `Dockerfile` | Unused while the secret is set. |

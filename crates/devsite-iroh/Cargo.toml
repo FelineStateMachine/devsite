@@ -9,3 +9,4 @@ anyhow.workspace = true
 data-encoding.workspace = true
 iroh = "1"
 iroh-services = "1"
+serde.workspace = true

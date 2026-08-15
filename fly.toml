@@ -20,6 +20,9 @@ primary_region = "sjc"
   # default client id and pairwise subjects from it, so changing it after anyone
   # has signed in is disruptive. It must match the hostname browsers load.
   DEVSITE_PUBLIC_ORIGIN = "https://dev.site"
+  # This deployment uses the relays from its Iroh Services project. A fork can
+  # replace this list or remove it to use the n0 relay preset.
+  DEVSITE_RELAY_URLS = "https://e67jyfby7vj7ak9h9.euc1.relay.iroh-svc.com/,https://e67jyfby7vj7ak9h9.use1.relay.iroh-svc.com/,https://e67jyfby7vj7ak9h9.usw1.relay.iroh-svc.com/,https://e67jyfby7vj7ak9h9.aps1.relay.iroh-svc.com/"
   RUST_LOG = "devsite_server=info,tower_http=warn,warn"
 
 [[mounts]]
