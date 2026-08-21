@@ -30,6 +30,20 @@ function sseEvent(data: string, event?: string, id?: string): string {
     + `${data.split('\n').map((line) => `data: ${line}\n`).join('')}\n`;
 }
 
+test('the signed-out home uses a font-independent wordmark', async ({ page }) => {
+  await page.route('https://dev.site.test/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/api/me') await route.fulfill({ status: 204 });
+    else await staticResponse(route, pathname);
+  });
+
+  await page.goto('https://dev.site.test/');
+
+  await expect(page.getByRole('heading', { name: 'dev.site' })).toBeVisible();
+  await expect(page.locator('.home-wordmark')).toBeVisible();
+  await expect(page.locator('.home-wordmark path')).toHaveCount(1);
+});
+
 test('an incoming share uses the Fixi UI endpoint', async ({ page }) => {
   let acceptRequests = 0;
   let removeRequests = 0;

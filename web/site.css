@@ -299,14 +299,12 @@ details:not(.dropdown)[open] > summary::after {
 }
 
 /* The sequence diagram is the signed-out page's one bespoke element. */
-main > article:has(> .sequence) h1 > span {
+main > article:has(> .sequence) .home-wordmark {
   display: block;
-  overflow: hidden;
-  font-family: var(--pico-font-family-monospace);
-  font-size: clamp(0.55rem, 1.3vw, 1.1rem);
-  font-weight: 400;
-  line-height: 1;
-  white-space: pre;
+  width: min(100%, 35.64rem);
+  height: auto;
+  fill: currentColor;
+  shape-rendering: crispEdges;
 }
 
 main > article:has(> .sequence) h1 {
